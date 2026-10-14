@@ -13,7 +13,19 @@
 import { GUEST_ARENA_BASE, loadHost, runGuest, hostAlreadyUsed } from "./guest_loader.js";
 export { loadHost, runGuest, hostAlreadyUsed };
 
-const SDK_URL = "https://unpkg.com/@wasmer/sdk@0.8.0-beta.1/dist/index.mjs";
+// The Wasmer SDK is vendored (vendor/wasmer-sdk/, @wasmer/sdk 0.8.0-beta.1,
+// MIT; vendor/README.md). The clang package is NOT vendored (110.7 MB, over
+// GitHub's file limit): it is fetched by its content address on cdn.wasmer.io
+// and its sha256 is checked before use, so the compiler under the page cannot
+// change. `fromRegistry("clang/clang")` named no version and needed a registry
+// lookup; this needs one host and pins the bytes. `?clangWebc=<url>` points
+// the fetch somewhere else (a local copy for a fully offline run); the hash
+// is checked all the same.
+const SDK_URL = new URL("./vendor/wasmer-sdk/index.mjs", import.meta.url).href;
+export const CLANG_WEBC_SHA256 = "c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405";
+export const CLANG_WEBC_BYTES = 110713421;
+const CLANG_WEBC_URL = new URLSearchParams(location.search).get("clangWebc")
+    || `https://cdn.wasmer.io/webcimages/${CLANG_WEBC_SHA256}.webc`;
 const HOST_DIR = "host/";
 
 let sdk = null;
@@ -21,13 +33,55 @@ let clangPkg = null;
 
 // --- Clang ---
 
+async function sha256Hex(bytes) {
+    const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+    return Array.from(d, b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function fetchClangWebc(setStatus) {
+    const mb = (CLANG_WEBC_BYTES / 1048576).toFixed(1);
+    let r;
+    try {
+        r = await fetch(CLANG_WEBC_URL);
+    } catch (e) {
+        throw new Error(`Could not download the clang compiler package (${mb} MB) from ${CLANG_WEBC_URL}: ${e.message || e}.\n` +
+            "The in-browser compile needs network access to fetch it (the browser caches it afterwards). " +
+            "Recompiling to C and the build-bundle download work offline.");
+    }
+    if (!r.ok) throw new Error(`Could not download the clang compiler package from ${CLANG_WEBC_URL}: HTTP ${r.status}`);
+    const total = Number(r.headers.get("content-length")) || CLANG_WEBC_BYTES;
+    const reader = r.body.getReader();
+    const buf = new Uint8Array(total);
+    let got = 0, lastPct = -1;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (got + value.length > buf.length) throw new Error(`clang package larger than expected (${got + value.length} > ${buf.length} bytes)`);
+        buf.set(value, got);
+        got += value.length;
+        const pct = Math.floor(got * 100 / total);
+        if (pct !== lastPct && pct % 5 === 0) { lastPct = pct; setStatus(`Downloading Clang (${mb} MB, cached by the browser after the first time): ${pct}%`); }
+    }
+    const bytes = got === buf.length ? buf : buf.subarray(0, got);
+    setStatus("Verifying the Clang package");
+    const hash = await sha256Hex(bytes);
+    if (hash !== CLANG_WEBC_SHA256) {
+        throw new Error(`The clang package from ${CLANG_WEBC_URL} does not match its pinned sha256 (got ${hash}, ${got} bytes; expected ${CLANG_WEBC_SHA256}, ${CLANG_WEBC_BYTES} bytes)`);
+    }
+    return bytes;
+}
+
 export async function loadClang(setStatus) {
     if (clangPkg) return clangPkg;
     setStatus("Loading Wasmer SDK");
-    sdk = await import(SDK_URL);
-    await sdk.init({});
-    setStatus("Loading Clang (~100 MB, cached by the browser after the first time)");
-    clangPkg = await sdk.Wasmer.fromRegistry("clang/clang");
+    if (!sdk) {
+        const mod = await import(SDK_URL);
+        await mod.init({});
+        sdk = mod;
+    }
+    const webc = await fetchClangWebc(setStatus);
+    setStatus("Loading Clang");
+    clangPkg = await sdk.Wasmer.fromFile(webc);
     return clangPkg;
 }
 

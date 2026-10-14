@@ -1,14 +1,50 @@
 {
- "$comment": "The release manifest. This repository carries ONE release: the in-browser recompiler page of PeerInfinity/SWFRecomp-CC, built from the single commit in `source`. Every file in the tree is listed with its md5; nothing here is hand-edited except README.md, LICENSE, licenses/, catalog.json and examples/ (see README). `runtime` names what the page fetches from the network at run time — those bytes are NOT in this repository.",
+ "$comment": "The release manifest. This repository carries ONE release of the in-browser recompiler page of PeerInfinity/SWFRecomp-CC. `source.commit` is the commit whose build inputs (SWFRecomp/, SWFModernRuntime/) produced every BUILT file (`build.files`, sha256 each); `source.page.commit` is the commit the page files (docs/recompiler/) come from. `source.buildInputsUnchanged` is the measured `git diff --name-only` of the build inputs between the two, which may name only paths that are not build inputs. Written by SWFRecomp-CC tools/browser-release/make_release.py; nothing here is hand-edited except README.md, LICENSE, licenses/, catalog.json and examples/. `runtime` names what the page fetches at run time; those bytes are NOT in this repository.",
  "source": {
   "repo": "PeerInfinity/SWFRecomp-CC",
   "commit": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
   "trees": {
    "SWFRecomp": "de89e9429186ea944f6423b5d76bbf89c058a2cc",
-   "SWFModernRuntime": "f0797b71387fe97783d4096a4422113a6303390f",
-   "docs/recompiler": "cdaf40685f8b6c42a6a9449d4363c02757a754c0"
+   "SWFModernRuntime": "f0797b71387fe97783d4096a4422113a6303390f"
   },
-  "recipe": "git archive <commit> SWFRecomp SWFModernRuntime docs/recompiler | tar -x; bash SWFRecomp/scripts/deploy_wasm_demo.sh --build (emsdk 5.0.0); copy docs/recompiler/ to recompiler/; build_info.json `commit` set to the short SHA (the archive has no .git)",
+  "page": {
+   "commit": "c842bf0d33109eba165bc3b882fc5c56c8c627e2",
+   "tree": "697e00b28c9b63d4aef132e98fae0a81bbeddf95",
+   "files": [
+    "WALK_API.md",
+    "coi-serviceworker.js",
+    "guest_loader.js",
+    "index.html",
+    "pipeline.js",
+    "pipeline_graphics.js",
+    "runner_template.html",
+    "vendor/README.md",
+    "vendor/fflate/LICENSE",
+    "vendor/fflate/browser.js",
+    "vendor/wasmer-sdk/LICENSE",
+    "vendor/wasmer-sdk/index.mjs",
+    "vendor/wasmer-sdk/wasmer_js_bg.wasm",
+    "walk_api.js"
+   ]
+  },
+  "buildInputsUnchanged": {
+   "from": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
+   "to": "c842bf0d33109eba165bc3b882fc5c56c8c627e2",
+   "paths": [
+    "SWFRecomp",
+    "SWFModernRuntime"
+   ],
+   "diff": [
+    "SWFRecomp/assets/NotoSans-OFL.txt"
+   ],
+   "allowlist": [
+    {
+     "path": "SWFRecomp/assets/NotoSans-OFL.txt",
+     "reason": "licence text; CMake embeds only assets/NotoSans.ttf (--embed-file of that one file)"
+    }
+   ]
+  },
+  "recipe": "built files: git archive <source.commit> SWFRecomp SWFModernRuntime docs/recompiler | tar -x; bash SWFRecomp/scripts/deploy_wasm_demo.sh --build (emsdk 5.0.0); build_info.json `commit` set to the short SHA (the archive has no .git). Release: tools/browser-release/make_release.py at source.page.commit.",
   "licence": {
    "commit": "7819368b16aacddc4895aa8dcfa2018439f309ef",
    "files": [
@@ -24,33 +60,891 @@
   "builtAt": "2026-10-14T18:42:26Z"
  },
  "page": "recompiler/index.html",
+ "walkApi": {
+  "protocol": "swfrecomp-walk",
+  "version": 1,
+  "module": "recompiler/walk_api.js",
+  "defaultChannel": "swfrecomp-walk"
+ },
+ "build": {
+  "commit": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
+  "files": [
+   {
+    "path": "SWFRecomp.js",
+    "bytes": 78302,
+    "sha256": "cbeae3c963e06c5e6173ac16d73c14250c80e66bf69c3b33d74e96f6146fd1ca"
+   },
+   {
+    "path": "SWFRecomp.wasm",
+    "bytes": 2335146,
+    "sha256": "1c0a8495defa6e5d00f5450c872861b264bacb368f9a7d3a7574b48921da468c"
+   },
+   {
+    "path": "build_info.json",
+    "bytes": 102,
+    "sha256": "3e4728b1ec8fa3eb47cd7f1b7e670f75e3b75941c1ce922dc3459c321d308ad1"
+   },
+   {
+    "path": "bundle/README.md",
+    "bytes": 1344,
+    "sha256": "61c723e7d9dc922587a5999c65bfe91c86ab7d417fe52af80b86468dafa5e225"
+   },
+   {
+    "path": "bundle/build.sh",
+    "bytes": 7677,
+    "sha256": "a06d4f149f064352df991112c728ffadf86d78e3bd1f6eb5f6b4044724348c75"
+   },
+   {
+    "path": "bundle/manifest.json",
+    "bytes": 10006,
+    "sha256": "7ba89993e9d68a7238658d3d75f649960331f91278bdc2ec6ace766304dfd597"
+   },
+   {
+    "path": "bundle/runtime/display_bridge.c",
+    "bytes": 13273,
+    "sha256": "c8934d3991acdd910e0e03b0f98e7ae62e3df1fdc78c186a1e696c590b23afa3"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/action.h",
+    "bytes": 53518,
+    "sha256": "3540464b2c20a839fc1ce31ceba31cd3b63bbbcd7aff904f33eeee023d993f4b"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/action_internal.h",
+    "bytes": 19710,
+    "sha256": "ee9d550d014e7b148aa6e9751baffa6368095b36b502ec692cd1f81da7eac350"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/action_queue.h",
+    "bytes": 15268,
+    "sha256": "2dee96c27246f08c88e8ae71638ce798ba4286f028bfb53896af2cd191691065"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/actiondate.h",
+    "bytes": 1820,
+    "sha256": "c7effed0dcfc331e7efa9fb3f77eb0cbc17e6e80b32493e2d7aa31213ed391ef"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/actionmath.h",
+    "bytes": 1835,
+    "sha256": "cf3acc2a01f06c86cf064ed8b586af7c93db80e48baf2100d8c20614785064bb"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/actionrando.h",
+    "bytes": 1359,
+    "sha256": "800ea6a1f3ced4cbd52e0688926c85d9a42ab261f852964274b00c9d9d284801"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/actionregclass.h",
+    "bytes": 3380,
+    "sha256": "a9b0ab7f4e116b8d2404215eda49571baa71a85b34ae1ce8230b259092edaa43"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/actiontimer.h",
+    "bytes": 2214,
+    "sha256": "982a111becaa2ee81843b1073bd9ab236507f5ec47f1786d29539b9c0d451d0a"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/avm1_amf.h",
+    "bytes": 4855,
+    "sha256": "55932741ece18b55759ca1dea46ac02eccda4bfc4cabfcaedf0c9a22744e26c7"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/object.h",
+    "bytes": 17314,
+    "sha256": "26aff0569e3d9d7ec5a096ed2c49b2378233cfedd25a0a0bf7d215f96d204dda"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/rando_ap.h",
+    "bytes": 2326,
+    "sha256": "64acd048464466ba214a5402a3da1c2795fa0f3b1eed6a2a571cd20c2d3e3669"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/sprite_frame_scripts.h",
+    "bytes": 3888,
+    "sha256": "33615ae1aedfe8a83442e3046349f96c6f9f06b31f1c1151095c99615eb2b459"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/stackvalue.h",
+    "bytes": 681,
+    "sha256": "919614ee4f715b141344b4e3f96916bfbd3e79422d4d8fabad86f2f1e4c350ac"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/variables.h",
+    "bytes": 861,
+    "sha256": "1b16615835cb62f5ec85efd4958975d420f4626abd8a30853da08b2a3b75376c"
+   },
+   {
+    "path": "bundle/runtime/include/actionmodern/video_codec.h",
+    "bytes": 3950,
+    "sha256": "8374223471d786605673b03132444270944e871177bc45d5a5ffb1d2c5f54223"
+   },
+   {
+    "path": "bundle/runtime/include/amf_packet.h",
+    "bytes": 4099,
+    "sha256": "42bee503bdcca70eec0fdc34a20c2db720bba915a2eb89d5eb2fd9658cf9b64f"
+   },
+   {
+    "path": "bundle/runtime/include/audio/audio.h",
+    "bytes": 5548,
+    "sha256": "7469c8f81f4c8c3b7c97cddfbce406666432718caabca0e7397e41ee8624d60d"
+   },
+   {
+    "path": "bundle/runtime/include/audio/minimp3.h",
+    "bytes": 76802,
+    "sha256": "5fb296a790734772b65a5514438cc06d14f24e539c13475ff2a7f737681c82c0"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_abc.h",
+    "bytes": 32811,
+    "sha256": "07d16fb36ac6dfcb2b40f09a66c9cbc97a6fdd02bc58c98f05c18416803c4218"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_class.h",
+    "bytes": 18419,
+    "sha256": "5ce67765bd8c58a32c4df70bbe234e1e926157e341ff14f5bc468d41a392fb97"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_cpu_raster.h",
+    "bytes": 5112,
+    "sha256": "6da5b3bd7c451e900a51ebc2032ffa6248a4b3c61c419994a295b03e1cc883f2"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_e4x.h",
+    "bytes": 13327,
+    "sha256": "294fe86062c8a7ed195342a0bd91a60c82a5b55aad47b6927d0ddc516a6f60f6"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_error.h",
+    "bytes": 8705,
+    "sha256": "4f759540a92edf7f0d61b9c6d302222dd919357d6ed11863432d646ebbfad4e4"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_filters.h",
+    "bytes": 6068,
+    "sha256": "50cbcf48f3dc37435f8286b63e490ad877312d074de50ecbf79430ceb42259b8"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_flixel.h",
+    "bytes": 4437,
+    "sha256": "39472f37ebbacdd8298b23fe076bc3b910792ece8bb75f44dacb1384d372824a"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_gc.h",
+    "bytes": 8032,
+    "sha256": "c6184307981c67e4227dd79a44cb2022e21ba4b1aa724442a66b5b9d7e54c2ce"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_globals.h",
+    "bytes": 62053,
+    "sha256": "e707f50aa978fb7de32edaec7ce451a29d681080320c6e39a818f2e7590ccbdc"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_main.h",
+    "bytes": 4458,
+    "sha256": "872d4d9f0ce136106526753d430b8ad360c3d2977bf0512cda12d42c4dba7d17"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_object.h",
+    "bytes": 10346,
+    "sha256": "123320bda3e4fa2902bf72b3341d9578634af676198ae6e6ba4ce23e52086634"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_ops.h",
+    "bytes": 44417,
+    "sha256": "cd17a4df5aee0aa136c31b5c7f71c5de01025fbdcd3d53dfff9fe2e26e90e93d"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_value.h",
+    "bytes": 5749,
+    "sha256": "d2006f751a4f4af8df7a0ca1138b1bc1a8911e2be0c0a0db916019a90a0d17a9"
+   },
+   {
+    "path": "bundle/runtime/include/common.h",
+    "bytes": 420,
+    "sha256": "b39a6c3ecbd3d51ac73213ef26365abc3054f454ed57a8f59b1f7babb27aea75"
+   },
+   {
+    "path": "bundle/runtime/include/curve_flatten.h",
+    "bytes": 4174,
+    "sha256": "1ef756d5524b3e8e2400543fa0aac9f4600409fd0c4c79a85681250a79f92da1"
+   },
+   {
+    "path": "bundle/runtime/include/dialog_events.h",
+    "bytes": 2888,
+    "sha256": "f2980627a6c55f566105ea44fed6691c373c284e63b407bf06588d1468f1c7d7"
+   },
+   {
+    "path": "bundle/runtime/include/flashbang/flashbang.h",
+    "bytes": 2707,
+    "sha256": "b5d3938a25c7af7babe05bf96fd29482eedf06bdedf1f040e2f6bde690dbc0ff"
+   },
+   {
+    "path": "bundle/runtime/include/gradient_ramp.h",
+    "bytes": 6457,
+    "sha256": "b419cba9480dc9887970129b259a818cde49c624acd93a6cb01d27c694034200"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/capture.h",
+    "bytes": 1235,
+    "sha256": "03a7b9df662c5e1937dacaddb0669aad8c6639fa668a81267cb27fdea9b998d7"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/generated_data.h",
+    "bytes": 3077,
+    "sha256": "8b869cf3d2544ced367dde8ab3d2335c8f1bf4e7602f548a4a8cf249dff362d1"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/hit_test.h",
+    "bytes": 1018,
+    "sha256": "06e5295bbf3846f78aa8ed5fb530dd2eb2d199297ea084dd28052e542e000af6"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/recomp.h",
+    "bytes": 802,
+    "sha256": "aa4fe433fe3b5d8359bc4fa3ce010dabde37f889cbff56ff4ccb619e46258c24"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/swf.h",
+    "bytes": 31544,
+    "sha256": "fcdd32350d44125a40f764085e9ea5efa82b777330a3fe675de2867aabe86166"
+   },
+   {
+    "path": "bundle/runtime/include/libswf/tag.h",
+    "bytes": 42373,
+    "sha256": "8e7958c54c9c5b02df4ac7bcdb55a631a78ad5e7ab6950d2dec2ace4b7d8590f"
+   },
+   {
+    "path": "bundle/runtime/include/memory/heap.h",
+    "bytes": 6412,
+    "sha256": "693d341999811e5b00e3e392d8040b39d1a24002275f2d19372420d6a2f2c754"
+   },
+   {
+    "path": "bundle/runtime/include/rendering/render_webgpu.h",
+    "bytes": 30969,
+    "sha256": "a84f681cca469dab59f5223d759107ffc30918eb05ca7cac433fa38e6ac288f4"
+   },
+   {
+    "path": "bundle/runtime/include/rendering/renderer.h",
+    "bytes": 9655,
+    "sha256": "b6c0c9fd4b22a613f600bd151f85c58550c814ee0391394bfaa21946a65836d0"
+   },
+   {
+    "path": "bundle/runtime/include/socket_events.h",
+    "bytes": 3943,
+    "sha256": "5b0e34cec2992b81ddc59e00c7ffc24f5e4d4a5dd9aae7abc427e9bb0050daa0"
+   },
+   {
+    "path": "bundle/runtime/include/utils.h",
+    "bytes": 5292,
+    "sha256": "c746e8c0c5b6ac839916a5f5a3f88eb986adc6ed20edbc3042f867df79260d21"
+   },
+   {
+    "path": "bundle/runtime/index_template_graphics.html",
+    "bytes": 8083,
+    "sha256": "875493d013432c1d5ad0b90ca241e2cc24ba7f1531669dbf49375d7505b24520"
+   },
+   {
+    "path": "bundle/runtime/lib/c-hashmap/map.c",
+    "bytes": 9365,
+    "sha256": "e518853325f8de98400e7ded79d7597e39af4466b3001645a1f59bb806fa0e64"
+   },
+   {
+    "path": "bundle/runtime/lib/c-hashmap/map.h",
+    "bytes": 3077,
+    "sha256": "cb0fea149a15568c63874daf1bfd500bd68267790d71778a8f2ec9ce0305705f"
+   },
+   {
+    "path": "bundle/runtime/lib/o1heap/o1heap.c",
+    "bytes": 24730,
+    "sha256": "15c93116ac76311e9da466b80a91bac4a3a7fa036b945a2ab37aca654cf8568b"
+   },
+   {
+    "path": "bundle/runtime/lib/o1heap/o1heap.h",
+    "bytes": 8526,
+    "sha256": "012131d292e95961578fa1d1e11eb8d22d48db331f7d12a32daf4b3d054c1be3"
+   },
+   {
+    "path": "bundle/runtime/lib/stb/stb_image.h",
+    "bytes": 283010,
+    "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
+   },
+   {
+    "path": "bundle/runtime/main.c",
+    "bytes": 9428,
+    "sha256": "213726f24b53c03967fe6d55a1a497469c052b455e359639e44bf35cd20e7b7b"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/action.c",
+    "bytes": 3342018,
+    "sha256": "1af392e2aa68891fbd90acc3a2891e3020d977a48a0d16f451c9b5da2d7000aa"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/action_queue.c",
+    "bytes": 29539,
+    "sha256": "2db23edc94a66a333e32f047a9d5b6dd09d5632c35cbf38998de7d77c7a75c9e"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/avm1_amf.c",
+    "bytes": 55663,
+    "sha256": "090cd7017149bd499111623db058934535b4665bcba7271d2330f5e95cb797fa"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/date.c",
+    "bytes": 45286,
+    "sha256": "99f2a4da133a0e517ad27a1b5017762a0eb0faea3ab20028583f86c3187060d3"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/image_decode.c",
+    "bytes": 2137,
+    "sha256": "f399f3332830b16b5f2429ef3e4dc24bc543b884c986f238e9cb5d13bcd49926"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/math.c",
+    "bytes": 18431,
+    "sha256": "80fbc3d45f941dc646008a002deb38222cda7120619fc7be71dd65d3f7053cac"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/object.c",
+    "bytes": 74227,
+    "sha256": "5ed8523652294ad8e46c18fd23c6094971bde0dddff44545d608bc0e6d4a528d"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/registered_class.c",
+    "bytes": 17843,
+    "sha256": "38c37a03476951a9b3d48bb730844303f64d6990cd522d4040b46cbc47adf2ae"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/sprite_frame_scripts.c",
+    "bytes": 3203,
+    "sha256": "35f80b2f849874db5d0d10e680384519b3fcbb9f694c33f64730ea44c75f8204"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/timer.c",
+    "bytes": 20682,
+    "sha256": "70bb6c78c5015c9afd5c4f1d25a4e4cf1ed7440072717ebe1e6faf8e7467b74a"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/unicode_case_tables.h",
+    "bytes": 45189,
+    "sha256": "fd03e27bdc698ae142041216f4a88e8d7f70fbdccc3bb91987eba198fba797d3"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/variables.c",
+    "bytes": 9715,
+    "sha256": "de88096fe4b737608c48f9f413a3ebcdefa8c5b8c3b7cd6150fa08b484399de6"
+   },
+   {
+    "path": "bundle/runtime/src/actionmodern/video_codec.c",
+    "bytes": 25807,
+    "sha256": "967696b4f0d6f02c629e259ba7cd70b11d3547feefeaa483d4f6466f46456e74"
+   },
+   {
+    "path": "bundle/runtime/src/amf_packet.c",
+    "bytes": 4626,
+    "sha256": "70153d91c6a960ac7b60f6d005ba089c7c88939bc5c9c95c25165cbaf42eef42"
+   },
+   {
+    "path": "bundle/runtime/src/audio/audio.c",
+    "bytes": 19571,
+    "sha256": "690c1fb783e1f99d47bca652338a7228a7e2b4f010620f843c7adc684edffecb"
+   },
+   {
+    "path": "bundle/runtime/src/audio/audio_output_web.c",
+    "bytes": 3225,
+    "sha256": "fda08a8c77d6854084d16bac108f49dd2a89a5ecee16f5560e07b9fcf76281bf"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_amf.c",
+    "bytes": 67591,
+    "sha256": "e717754e0c8788d65414194d769c5c0c9761fad2f9bce03272e08109a414e159"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_array.c",
+    "bytes": 41902,
+    "sha256": "e7b52ead6a2bdb7409a8ff52b8e51125dc08c81f409ffe65e5670446a039fec7"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_bitmap.c",
+    "bytes": 155224,
+    "sha256": "0ae00f9b3e644351ed25fa51232f4688b08736b4425a65f91234d14fd8514ead"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_bytearray.c",
+    "bytes": 51731,
+    "sha256": "b508c0a8fe126942b003ba529a8262f22a1ddd3d77c195876e6321254336aac4"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_class.c",
+    "bytes": 78877,
+    "sha256": "505109ac86dc0cb742e25907619cd523139f842d55218dc6195b697155f7160b"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_cpu_raster.c",
+    "bytes": 22014,
+    "sha256": "2f3013800d1d34187e92c3643022c003a64499d8ff4ee14605e13d82e88d82f8"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_date.c",
+    "bytes": 35928,
+    "sha256": "39d81a284f9129c3aeb4dea4e06aee5fb2f1c67647313a74d780ada28a2027f8"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_dictionary.c",
+    "bytes": 1782,
+    "sha256": "d739e033a54be92fdb71ae41dc824f818464f3ad9c417d720fd5f580c8be0652"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_display.c",
+    "bytes": 801045,
+    "sha256": "76ce3b1758c4809f9adbd3046ebd18220a2e6ba88abe283eb2ab061998c1fef3"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_e4x.c",
+    "bytes": 68259,
+    "sha256": "68e285dd93a7dbd388db0feb6c81306565940087a122b970923b254da3501b79"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_error.c",
+    "bytes": 92359,
+    "sha256": "c109abcf23033b69b81c4f51a88e41b4abbbbf8b570b0197c71c6de2af49bafd"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_events.c",
+    "bytes": 100339,
+    "sha256": "33e18cd84c43d9ec8114e261449afd8d60b8fd75182d611cfe04a9ffe01bbc8a"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_external.c",
+    "bytes": 14323,
+    "sha256": "a17611a12b6df5dcc0693834e9183ae966d390c57bd9789934a1a07209e1e8f5"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_filters.c",
+    "bytes": 48015,
+    "sha256": "b542097ec62ec6630416e9b356241a0c490dd96b9a72dafd1cbdbe7093bc7f8e"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_flixel.c",
+    "bytes": 50245,
+    "sha256": "b624616990db0413c4f537ac83fd46424267e7f5f899b10c99824725fecc506d"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_function.c",
+    "bytes": 15902,
+    "sha256": "bbbcf80262651b4accf215714b590fdcabc05b691296bf7ae0f94af30ae9b72a"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_gc.c",
+    "bytes": 46032,
+    "sha256": "321bf298b711607efa41daba351eac13fefd9ce94f0c23a92293e4b7306cc191"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_globals.c",
+    "bytes": 407732,
+    "sha256": "31418a1c3d1938a4d1d385dcaf35af1ea2b4f6af48d72bedfbb10b3a48d8892e"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_json.c",
+    "bytes": 34367,
+    "sha256": "c1ffe8066c314b4a69698af49e16f6da76b70e840c5b519ffd62116afa1e7cda"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_main.c",
+    "bytes": 37668,
+    "sha256": "03eaabd5e284b79c691e105200c2226a26db31215428995d427126a2f9d55f4f"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_media.c",
+    "bytes": 71024,
+    "sha256": "844f3d701f71c503a88f17424d2504a42a2a91ff46cddf7fcfc4bdd4ec52d42f"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_mops.c",
+    "bytes": 9916,
+    "sha256": "8d3164a098263549f2e3e241dbc8af84cef59a9831e1ffac59881e61d9e4bd61"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_net.c",
+    "bytes": 109829,
+    "sha256": "1d9e8cb520dfbc938a8b113e0e775280f9ee6c284a52840b9806954c1fb4e595"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_nsqname.c",
+    "bytes": 14637,
+    "sha256": "57c989794696d1a425d26e4a0c7b060f3411967963b7bbd6f316ba78cb90441a"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_number.c",
+    "bytes": 39850,
+    "sha256": "a8c44a0beb6acafc11790112206f30507af7a787fa70fcb0b6eda484c3a9b61f"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_object.c",
+    "bytes": 19226,
+    "sha256": "eba15c901aa7698c3249f8ebd488a96c565ed6f6ef43a6a77ecafaf28354015c"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_ops.c",
+    "bytes": 179479,
+    "sha256": "cf9cb2effff95b7d164ba755cd5d56f209ef38ca1e1affc181472478b2c8e336"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_pixelbender.c",
+    "bytes": 73316,
+    "sha256": "145ad49a0daf30f1626523de5a62fa99229f9a93881a1beace42b9f5f4d12945"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_proxy.c",
+    "bytes": 8006,
+    "sha256": "81b7e29851fa2c1a442a3f8f86e119df49ba25f68489e958212e925fb181215d"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_regexp.c",
+    "bytes": 39798,
+    "sha256": "84ef65edc1cd47ae051fcaa58c80bbf92164fabeec2d545ffe83910177334355"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_stage3d.c",
+    "bytes": 186869,
+    "sha256": "44930d9aa18b5dead7b10d80e200e6c942c123f6d936f67a098dc66f67497f9c"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_string.c",
+    "bytes": 25829,
+    "sha256": "9ce497fb870108a997127bfee69674ad53a92bce0166fddaf9f84a1cd2e39702"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_text.c",
+    "bytes": 382028,
+    "sha256": "9990fd02a22ac5fc5a9e229ff4265975fb4602c4e0c20c46c0e85c9ed005996c"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_value.c",
+    "bytes": 38061,
+    "sha256": "27bc74189ab6165f0244abf6fccc2632439bc9e0d1623828b9258e9d21534a06"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_vector.c",
+    "bytes": 43712,
+    "sha256": "45662167d5ccbba92993579c6186bf0803238a5c7cabbf10a02dba1fba875938"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_xml.c",
+    "bytes": 117640,
+    "sha256": "684e915e9a8049b9e95d4e583e993a05356dbcf604ad74fa051f2d18213f2a96"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/graphics_stubs.c",
+    "bytes": 23997,
+    "sha256": "7e10ef7a6ae3febdf6df3405f8305afc5067ae1f8c970801026a8e6a113c0919"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/hit_test.c",
+    "bytes": 3432,
+    "sha256": "f5ad4bda2018c45218fd847357d9b937caaa02990aaec74d57913f30efbbd783"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/ng_shared.c",
+    "bytes": 99959,
+    "sha256": "08b478480f1338bf3bfc2acdaf73fde074f65e71d10bd9e38580376a0a77cd97"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/shape_hit_test.c",
+    "bytes": 31577,
+    "sha256": "3a3c1892780d7ee3b026543ef6226fba3ab417298b82de61a91e5b4d05774b9c"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/stb_image_impl.c",
+    "bytes": 464,
+    "sha256": "ec6b822be40de7cce0bc3ad22bbe74ccb83c87a9aac5e0d0da17f87bb28f3231"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/swf.c",
+    "bytes": 85452,
+    "sha256": "130b5d3f0ea5142ea03468e882578b25bc914cce47aea7fc306a8343eb5931a1"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/tag.c",
+    "bytes": 615949,
+    "sha256": "ec1dbc74db25851f289eb92dac7e646378d1eefa8ea627093b62e91c8fa178d3"
+   },
+   {
+    "path": "bundle/runtime/src/libswf/tag_stubs.c",
+    "bytes": 139176,
+    "sha256": "6aac2420106a90e27ff61bbe2c2bc7212dbf33aabfc6f36bcda9b02a794b743a"
+   },
+   {
+    "path": "bundle/runtime/src/memory/heap.c",
+    "bytes": 18236,
+    "sha256": "c06894433a232cb3f5170c4b7e4c0d3e9275285a8b965988d54d815c947825fa"
+   },
+   {
+    "path": "bundle/runtime/src/rendering/render_webgpu.c",
+    "bytes": 281125,
+    "sha256": "8555dcb546ca38312327286d8e79e964cf5af76c8892e8bb004ff70433729e03"
+   },
+   {
+    "path": "bundle/runtime/src/utils.c",
+    "bytes": 109611,
+    "sha256": "f225fb4c87a65170e3d0434e57bd3349f03eb9aca4e10d21b426550d7de5334b"
+   },
+   {
+    "path": "bundle/runtime/swf_bridge.js",
+    "bytes": 4853,
+    "sha256": "ab0b51b53b846a7289fa78c67de60d0a6d73ba9439ce8249fe182b21a2a21390"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/bucketalloc.c",
+    "bytes": 4982,
+    "sha256": "4bed9bf6e19d6386623fed80361f495707ac2fc255ddc4238f6b8dd5869d8f20"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/bucketalloc.h",
+    "bytes": 2054,
+    "sha256": "024e5e198f94947f9fbc923ce38a693f49efa0d7f7af69e5010c08d1970086f3"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/dict.c",
+    "bytes": 3491,
+    "sha256": "c9fdf76a43d947bdcf397eb56e3f94fbb040d65b7a5f295458d995896550b6f9"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/dict.h",
+    "bytes": 2837,
+    "sha256": "692bdfd92af0c009b9d56fdfbbd51589f9303798bc75c43fb4fcbf5c6afd7f5a"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/geom.c",
+    "bytes": 9741,
+    "sha256": "1b2ed092634483d7b9fd51c01609a68f1373bb0945b7e660f6abf65c8964ebb6"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/geom.h",
+    "bytes": 3824,
+    "sha256": "dfc62f50e25c3ada66c9f1250f22f41b1e0fcafec825ae3310d8bf345accb170"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/mesh.c",
+    "bytes": 25710,
+    "sha256": "0fa745fb0eb630ade395058e3821f3a4703d324dfb3c0fafbd9f844ef9349a50"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/mesh.h",
+    "bytes": 12422,
+    "sha256": "dd63748ca12ccbb048cf77fd64497aca403c9e8dd3ce963527f5c5f480bb4835"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/priorityq.c",
+    "bytes": 13316,
+    "sha256": "bf5185c5d8b0ba3628d5613cc7373ee96cf2a18117fb6ce3d34f31cc432c9a6f"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/priorityq.h",
+    "bytes": 3777,
+    "sha256": "c9bba2a5f1d7349a6ef2369cc8fcb5cc6351cfd7720e8c6e42bba2c3ef2d3a5b"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/sweep.c",
+    "bytes": 46877,
+    "sha256": "5a2f188e47ba6c1dd813c96569f16755c55e3024f5c6b161aacdb0f146d24724"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/sweep.h",
+    "bytes": 3209,
+    "sha256": "a53d039fe6601e3259f0a0dd9e13b5e19e49164b5e903e43b4cd66c93de9c008"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/tess.c",
+    "bytes": 29577,
+    "sha256": "8f6ad20e75400bb4e33ee4b2cb6ed4b6b1ef4ff51a7f7916eca65ce0674c3398"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/tess.h",
+    "bytes": 3038,
+    "sha256": "b8c190ceb236a0c7975f2a628f340c6725a8f5e91778e9eb28b455548e2cc864"
+   },
+   {
+    "path": "bundle/runtime/third_party/libtess2/tesselator.h",
+    "bytes": 11017,
+    "sha256": "8c7b9eae2b2856856970078522d7dd3416ca974f8d6e5610ae04c63622a444ac"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/7zTypes.h",
+    "bytes": 9179,
+    "sha256": "9944ed24b9e52cb57035e44c812011c66caaa462ad4e9efdb86b12a47bba0056"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/Compiler.h",
+    "bytes": 1253,
+    "sha256": "432fffe11231783e452fa0d7bbfc0412d6860e377291e00d54e0fdf01b029878"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzFind.c",
+    "bytes": 25920,
+    "sha256": "dfd69e35c0e6df420c880f6d01822050477a1e3ee2348b0a35d218d1dd9f720b"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzFind.h",
+    "bytes": 3570,
+    "sha256": "49d13c4edb9382b4598100166f0b91aedfc2e8a52df2921ed05fd5bfe755b2fa"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzHash.h",
+    "bytes": 1824,
+    "sha256": "8303c1c37c1bb07cc91a1300b7b7e7d89070981e030549d63126453194b477b6"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzmaDec.c",
+    "bytes": 33031,
+    "sha256": "e7387dcf8c26ee9a5e23ec3d92b76a650741fb6cc3f2e1c38c7501d601dc7f71"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzmaDec.h",
+    "bytes": 7136,
+    "sha256": "f43c4023065b3fc6c230c309457645070cecef848e8a3a1c9c4e0aa54eb5c5ff"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzmaEnc.c",
+    "bytes": 75082,
+    "sha256": "3c848e0151444c2a33d87ebe465796b55d0c3b1a66e842b7b0aa3cd85d5c3dea"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/LzmaEnc.h",
+    "bytes": 3070,
+    "sha256": "474db10f1e485a744ecd560f7a9560a4e24888b46a34432910efd9b964c79299"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/Precomp.h",
+    "bytes": 615,
+    "sha256": "71f8279ef9ed5cd8f630589a8f105bc429854ffccd0abcb259c5c195e154a57e"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/lzma_alone.c",
+    "bytes": 5232,
+    "sha256": "6b50409f22641646b9df5c3815ffc0a897225dd95375ba5c214f5c76f996a3b2"
+   },
+   {
+    "path": "bundle/runtime/third_party/lzma/lzma_alone.h",
+    "bytes": 1297,
+    "sha256": "397f5bd8af47d65bfea30f290143983152838407d62bf898c58bd1ff3c863cb9"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/cutils.c",
+    "bytes": 17798,
+    "sha256": "b73a403a59da30726257ddbdf5e399298941c1def997782ee0d4d33f796a80a2"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/cutils.h",
+    "bytes": 11162,
+    "sha256": "d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
+    "bytes": 2887,
+    "sha256": "2a98d646089f3a72f25480116297c5fdb5b28fd9f815447273951f4ade4a115e"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp.c",
+    "bytes": 113209,
+    "sha256": "fdfcf86167029ab2c39c35730d4ae6875b7bbeb9406a0fcc886de4e9b1f5e2ac"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp.h",
+    "bytes": 2737,
+    "sha256": "f5c5ef1899f224dcc718422a22c789ef9d8b5b837b622818fcfaf681ae793446"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libunicode-table.h",
+    "bytes": 252492,
+    "sha256": "cf782bc7a07549e976f606bd3cb8555858482b279574554dcb8d46412986006c"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libunicode.c",
+    "bytes": 63617,
+    "sha256": "26203ae888c0582e7d0e2113f13db0c9b39dc7b0b3836d68fa308c54f7a0898c"
+   },
+   {
+    "path": "bundle/runtime/third_party/quickjs-libregexp/libunicode.h",
+    "bytes": 5979,
+    "sha256": "ce310152bc80d7415dcb657e23abd9a40bf83e393c0d05d325dae384bb01d259"
+   },
+   {
+    "path": "host/bridge_globals.c",
+    "bytes": 764,
+    "sha256": "34ab78b9b44c57669d47b0c3766c14843eebc155c7028fdc707030777dcaa786"
+   },
+   {
+    "path": "host/bridge_globals.h",
+    "bytes": 1372,
+    "sha256": "9cae9f764e40e5271367ef3792d0cbb70fd4d9abc2e05d727c04aed258382a53"
+   },
+   {
+    "path": "host/graphics_host.js",
+    "bytes": 271385,
+    "sha256": "031e8b1f7897657b271236d37461200fb2c2b1b7a060e1220baf511a99dc9605"
+   },
+   {
+    "path": "host/graphics_host.wasm",
+    "bytes": 1630820,
+    "sha256": "ca760506ce414c6cccfebf4402591bec6b95dc3394681457bf65404636a9d642"
+   },
+   {
+    "path": "host/graphics_host_avm2.js",
+    "bytes": 359171,
+    "sha256": "f7ffcbdb228898fc6f6ac7dd4ad97cd56cc0f7b3a0433d09b59376c27d3a10dd"
+   },
+   {
+    "path": "host/graphics_host_avm2.wasm",
+    "bytes": 3234778,
+    "sha256": "43c5ae54a4895c671cb5acfd91c0ee93a3de90102ced3657706a339b70f84d83"
+   },
+   {
+    "path": "host/guest_main_graphics.c",
+    "bytes": 7301,
+    "sha256": "9f1d741e3b1f632d941b49e30bfb44a77b46ca1fe6e8aad05001e3ce99042cdb"
+   },
+   {
+    "path": "host/guest_setjmp_shim.h",
+    "bytes": 1581,
+    "sha256": "a2eeeb951025cd23b4c1015c5a3d1ec2892d3221b2d8f79fb75ff7595853525c"
+   }
+  ],
+  "sameAsPreviousRelease": {
+   "equal": true,
+   "files": 168,
+   "basis": "the previous release's committed blobs at 016d2b8d69d4988eaa699a0733d57b8dd50a40fd (md5-checked against its release.json)"
+  }
+ },
  "runtime": {
-  "requires": "Chrome/Chromium 137+ (WebAssembly JSPI), WebGPU, SharedArrayBuffer (cross-origin isolation via recompiler/coi-serviceworker.js)",
-  "fetches": [
+  "requires": "Chrome/Chromium 137+ (WebAssembly JSPI), WebGPU, SharedArrayBuffer (cross-origin isolation via recompiler/coi-serviceworker.js; in an iframe, via its Document-Isolation-Policy where the browser honours it)",
+  "vendored": [
    {
     "what": "@wasmer/sdk",
     "version": "0.8.0-beta.1",
     "license": "MIT",
-    "url": "https://unpkg.com/@wasmer/sdk@0.8.0-beta.1/dist/index.mjs (+ wasmer_js_bg.wasm, 5,698,342 B)",
-    "pinned": true
-   },
-   {
-    "what": "clang/clang (wasmer registry)",
-    "version": "0.160000.1 (the only version published)",
-    "resolvedBy": "https://registry.wasmer.io/graphql — `fromRegistry(\"clang/clang\")`, NO version in the request",
-    "webc": "https://cdn.wasmer.io/webcimages/c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405.webc",
-    "webcSha256": "c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405",
-    "bytes": 110713421,
-    "license": "not declared in the registry (contents: LLVM/clang 16 + lld, Apache-2.0 WITH LLVM-exception; a WASIX libc sysroot)",
-    "pinned": false
+    "path": "recompiler/vendor/wasmer-sdk/",
+    "npmTarballSha256": "3955c4c0a5d65fc016aadb9040121e0866cec3843dda1bd272f1ff5e18127907"
    },
    {
     "what": "fflate",
     "version": "0.8.2",
     "license": "MIT",
-    "url": "https://unpkg.com/fflate@0.8.2/esm/browser.js",
-    "usedFor": "the zip downloads only",
-    "pinned": true
+    "path": "recompiler/vendor/fflate/",
+    "usedFor": "the zip downloads",
+    "npmTarballSha256": "61fd5061e2fc8e5e3e3129f7f2fec7bd78a313e1bf4becbf1cc1cc9998d141dc"
+   }
+  ],
+  "fetches": [
+   {
+    "what": "clang/clang (wasmer registry package)",
+    "version": "0.160000.1",
+    "url": "https://cdn.wasmer.io/webcimages/c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405.webc",
+    "sha256": "c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405",
+    "bytes": 110713421,
+    "pinned": true,
+    "verified": "the page checks the sha256 before use; `?clangWebc=<url>` fetches it elsewhere (same check)",
+    "license": "not declared in the registry (contents: LLVM/clang 16 + lld, Apache-2.0 WITH LLVM-exception; a WASIX libc sysroot)"
    }
   ]
  },
@@ -58,968 +952,1221 @@
   {
    "path": ".nojekyll",
    "bytes": 0,
-   "md5": "d41d8cd98f00b204e9800998ecf8427e"
+   "md5": "d41d8cd98f00b204e9800998ecf8427e",
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
   },
   {
    "path": "LICENSE",
    "bytes": 1114,
-   "md5": "0ec0fd2f5ffb6cd388e4ba081feab23a"
+   "md5": "0ec0fd2f5ffb6cd388e4ba081feab23a",
+   "sha256": "ec21e9aaf0261c516bb48240abe50015a3614c7b833d73d3a0c0b165ca4867d3"
   },
   {
    "path": "README.md",
-   "bytes": 6378,
-   "md5": "7d1e639af5e46f360682169b6e14cf2e"
+   "bytes": 9605,
+   "md5": "cf3cfc383689f4a22da265ad271fea94",
+   "sha256": "fddb571e13e37df2bc8945ce5ca397d23c5d59a6de72acf91b4113ce72f6ae6c"
   },
   {
    "path": "catalog.json",
    "bytes": 81,
-   "md5": "21332e8d4179c0025e23ecbdd8a13f0f"
+   "md5": "21332e8d4179c0025e23ecbdd8a13f0f",
+   "sha256": "d622e5a1f4039b7fe2be87c4efa4597890a4f0053a255252d7afc41a8dec53c4"
   },
   {
    "path": "examples/graphics/avm2_graphics_runtime/Test.as",
    "bytes": 2331,
-   "md5": "8beca411bb8167f49883eff4c5567a4a"
+   "md5": "8beca411bb8167f49883eff4c5567a4a",
+   "sha256": "43709e996b63a1c58056980c72dbc0ac9e49b2482ccdbf2f0e860d47eb7c4db0"
   },
   {
    "path": "examples/graphics/avm2_graphics_runtime/build_swf.sh",
    "bytes": 366,
-   "md5": "f1a9015ce260a148cf3d240db952e291"
+   "md5": "f1a9015ce260a148cf3d240db952e291",
+   "sha256": "5c6b41fe23e13b7a911ec4a3d9c85f7152c06896baccb6a63a1021c8f9b39100"
   },
   {
    "path": "examples/graphics/avm2_graphics_runtime/output.txt",
    "bytes": 96,
-   "md5": "70d9bd8174b028b6ee29862624bd5156"
+   "md5": "70d9bd8174b028b6ee29862624bd5156",
+   "sha256": "9da57e6d575f5c183334047144dcd67287d513f81681612ffca3a26e6445ca4f"
   },
   {
    "path": "examples/graphics/avm2_graphics_runtime/test.swf",
    "bytes": 1181,
-   "md5": "49ca77b0cf96828b3a654022a0b615fe"
+   "md5": "49ca77b0cf96828b3a654022a0b615fe",
+   "sha256": "d245b53224c0e1215d6d11123a4d9ff747e2e00b7ce86086df67c1f5581b28ee"
   },
   {
    "path": "licenses/NotoSans-OFL-1.1.txt",
    "bytes": 4235,
-   "md5": "a2faefa4517bd4e75a157c8a3be232ce"
+   "md5": "a2faefa4517bd4e75a157c8a3be232ce",
+   "sha256": "dfdcfa2e83f9d092ff83da1bc2724cb96dd59a1b5e78bcd92843b23dcaf06176"
   },
   {
    "path": "licenses/c-hashmap-BSD-3.txt",
    "bytes": 1515,
-   "md5": "0a61dff75f1e9ad9f78d3c2a36c3f34d"
+   "md5": "0a61dff75f1e9ad9f78d3c2a36c3f34d",
+   "sha256": "aef69c999c09cac662b6e12bb0cddff4470d4179470038d5ca407430904743f1"
   },
   {
    "path": "licenses/coi-serviceworker-MIT.txt",
    "bytes": 163,
-   "md5": "36d84f79d4056c2ba513b9a04182f10b"
+   "md5": "36d84f79d4056c2ba513b9a04182f10b",
+   "sha256": "ad8249786cadaa993138ef5e2985d549086866b6cdd1e14b7db42391ef1a0113"
   },
   {
    "path": "licenses/earcut-ISC.txt",
    "bytes": 738,
-   "md5": "0652c9aa0d7435db4efcc11962e59e51"
+   "md5": "0652c9aa0d7435db4efcc11962e59e51",
+   "sha256": "828f2aed51b6526881a236758ec9b08cd69928fbfc70346d9d44a0b3a3444fe1"
   },
   {
    "path": "licenses/emscripten-MIT-NCSA.txt",
    "bytes": 5093,
-   "md5": "7786e9add92fd8a28ff21b418fb590e1"
+   "md5": "7786e9add92fd8a28ff21b418fb590e1",
+   "sha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86"
+  },
+  {
+   "path": "licenses/fflate-MIT.txt",
+   "bytes": 1069,
+   "md5": "430d99d7ae8285bc905cbd8e285f3fc2",
+   "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243"
   },
   {
    "path": "licenses/libtess2-SGI-B-2.0.txt",
    "bytes": 1577,
-   "md5": "0788a91aa827d68f447dc011ed64727e"
+   "md5": "0788a91aa827d68f447dc011ed64727e",
+   "sha256": "582c43ef2eb5aba92c6fb92913194a966989ffb044aef5dee0e37590029a86a5"
   },
   {
    "path": "licenses/o1heap-MIT.txt",
    "bytes": 1399,
-   "md5": "cb8b936ec0279518a92c95ce0cb7a761"
+   "md5": "cb8b936ec0279518a92c95ce0cb7a761",
+   "sha256": "0d5a956c50a5f4968c1a76e8858118a9b35aedc8fbf4efbf2b60a9fee8fabbd7"
   },
   {
    "path": "licenses/quickjs-libregexp-MIT.txt",
    "bytes": 1196,
-   "md5": "81ef769db556f32343edf4d9104d082c"
+   "md5": "81ef769db556f32343edf4d9104d082c",
+   "sha256": "04e226e3784b13ad2216afc87afe768f272bc522108609906e9592f165dd31af"
   },
   {
    "path": "licenses/stb-MIT-or-PD.txt",
    "bytes": 2510,
-   "md5": "fb994481c55623ef338885280e676f3b"
+   "md5": "fb994481c55623ef338885280e676f3b",
+   "sha256": "bebfe904b14301657e4e5d655c811d51fd31b97c455b9cc2d8600d6bac6cff63"
   },
   {
    "path": "licenses/tomlplusplus-MIT.txt",
    "bytes": 1094,
-   "md5": "90960f22c10049c117d56ed2ee5ee167"
+   "md5": "90960f22c10049c117d56ed2ee5ee167",
+   "sha256": "529bc3900a9571e49db285b0df432397e70b881cc3bf48de6667ae74ff4b06d8"
+  },
+  {
+   "path": "licenses/wasmer-sdk-MIT.txt",
+   "bytes": 1097,
+   "md5": "71afdf3349f1efb1361cfd1e9e85bb8d",
+   "sha256": "76dc7d305458d07478bc62669fe53dbfd3b94b95c5e00fbb45af1f492cbd7284"
   },
   {
    "path": "licenses/zlib.txt",
    "bytes": 1002,
-   "md5": "7a3f0162f314572de39002f96e65a850"
+   "md5": "7a3f0162f314572de39002f96e65a850",
+   "sha256": "0f854f426019c475697e17f1b0fa638270f6e700bc756d9bfe50d17268bd3281"
   },
   {
    "path": "recompiler/SWFRecomp.js",
    "bytes": 78302,
-   "md5": "2a21fee453b7f421c9b1a4cc403adc6d"
+   "md5": "2a21fee453b7f421c9b1a4cc403adc6d",
+   "sha256": "cbeae3c963e06c5e6173ac16d73c14250c80e66bf69c3b33d74e96f6146fd1ca"
   },
   {
    "path": "recompiler/SWFRecomp.wasm",
    "bytes": 2335146,
-   "md5": "248344391b11ac9cdd10bb668efcafd0"
+   "md5": "248344391b11ac9cdd10bb668efcafd0",
+   "sha256": "1c0a8495defa6e5d00f5450c872861b264bacb368f9a7d3a7574b48921da468c"
+  },
+  {
+   "path": "recompiler/WALK_API.md",
+   "bytes": 7775,
+   "md5": "d94f0776a50d1daf901de89060253185",
+   "sha256": "b60dc737b7895e561e23497c72a7ef42a83d7b756399732c6f5b14e5aa51b94a"
   },
   {
    "path": "recompiler/build_info.json",
    "bytes": 102,
-   "md5": "8c2719e5bf8bf251c03db536a5861187"
+   "md5": "8c2719e5bf8bf251c03db536a5861187",
+   "sha256": "3e4728b1ec8fa3eb47cd7f1b7e670f75e3b75941c1ce922dc3459c321d308ad1"
   },
   {
    "path": "recompiler/coi-serviceworker.js",
-   "bytes": 5527,
-   "md5": "b46218d4b459ce3cc04f74df477ee990"
+   "bytes": 5993,
+   "md5": "014cb28f85398bc8b8245627af407287",
+   "sha256": "dc41af3f40a5fe70af8aeb9eabfa87be69f585aee8ea12363c8ab369fbbe4a39"
   },
   {
    "path": "recompiler/guest_loader.js",
    "bytes": 12506,
-   "md5": "b6cbdb228845287c62d42414f1d06e09"
+   "md5": "b6cbdb228845287c62d42414f1d06e09",
+   "sha256": "43dc53de53509f6bac3fe6be3f6a7f4eb7095ce6d88ca1314f29773ae7729a56"
   },
   {
    "path": "recompiler/index.html",
    "bytes": 8429,
-   "md5": "8e93c703d5f419409c95a2ad00caee08"
+   "md5": "8e93c703d5f419409c95a2ad00caee08",
+   "sha256": "cedd129f6e9f88174ed51fb915f7778b034f6be4fa195ed527a2350700b5004f"
   },
   {
    "path": "recompiler/pipeline.js",
-   "bytes": 23039,
-   "md5": "52e59a9c2f37d3c3de556e1210effb8e"
+   "bytes": 26967,
+   "md5": "0eaafd3d59a5f9ebe85d186056ff6f30",
+   "sha256": "3d1a2a5b30ebafc2d47c647a853185009042bac976b6dc8e8d05f62e627b5472"
   },
   {
    "path": "recompiler/pipeline_graphics.js",
-   "bytes": 7085,
-   "md5": "c8aaa532cce69367be2374a1cae97282"
+   "bytes": 9909,
+   "md5": "f44b9b23f88902464edcbf2c4e71642a",
+   "sha256": "e93bf5fdb2aa331dc72d0620c4ad02e28e4accd6bddf5c99cbd2fecf48d7d918"
   },
   {
    "path": "recompiler/runner_template.html",
    "bytes": 3047,
-   "md5": "aa5e9e035175c982774451f39aa94e01"
+   "md5": "aa5e9e035175c982774451f39aa94e01",
+   "sha256": "c89053d466b9d47f36d8b4c86c3e92fbc5291032875b7d50bd163fcfe6996385"
+  },
+  {
+   "path": "recompiler/walk_api.js",
+   "bytes": 15081,
+   "md5": "1615a0852a517d0343fc150620a9a06e",
+   "sha256": "734b9d2462bedb4ded404770e35e7d1beeed2fc6f15482ef7159e08645e933fd"
   },
   {
    "path": "recompiler/bundle/README.md",
    "bytes": 1344,
-   "md5": "097ce3faf803dca639b3f8fe18afd490"
+   "md5": "097ce3faf803dca639b3f8fe18afd490",
+   "sha256": "61c723e7d9dc922587a5999c65bfe91c86ab7d417fe52af80b86468dafa5e225"
   },
   {
    "path": "recompiler/bundle/build.sh",
    "bytes": 7677,
-   "md5": "9d6fdb4b47dc39856935f512c0de7eed"
+   "md5": "9d6fdb4b47dc39856935f512c0de7eed",
+   "sha256": "a06d4f149f064352df991112c728ffadf86d78e3bd1f6eb5f6b4044724348c75"
   },
   {
    "path": "recompiler/bundle/manifest.json",
    "bytes": 10006,
-   "md5": "3796f4e216d2b2db8854e89056cf6199"
+   "md5": "3796f4e216d2b2db8854e89056cf6199",
+   "sha256": "7ba89993e9d68a7238658d3d75f649960331f91278bdc2ec6ace766304dfd597"
   },
   {
    "path": "recompiler/bundle/runtime/display_bridge.c",
    "bytes": 13273,
-   "md5": "1d77673727a25059a6e79de64733b968"
+   "md5": "1d77673727a25059a6e79de64733b968",
+   "sha256": "c8934d3991acdd910e0e03b0f98e7ae62e3df1fdc78c186a1e696c590b23afa3"
   },
   {
    "path": "recompiler/bundle/runtime/index_template_graphics.html",
    "bytes": 8083,
-   "md5": "cf99c87516a8ff5d865abaf24b8d6498"
+   "md5": "cf99c87516a8ff5d865abaf24b8d6498",
+   "sha256": "875493d013432c1d5ad0b90ca241e2cc24ba7f1531669dbf49375d7505b24520"
   },
   {
    "path": "recompiler/bundle/runtime/main.c",
    "bytes": 9428,
-   "md5": "04a77fbdd75a5d8fd792f04fa719803b"
+   "md5": "04a77fbdd75a5d8fd792f04fa719803b",
+   "sha256": "213726f24b53c03967fe6d55a1a497469c052b455e359639e44bf35cd20e7b7b"
   },
   {
    "path": "recompiler/bundle/runtime/swf_bridge.js",
    "bytes": 4853,
-   "md5": "c3830fffbc92188196db4c2bb875f3af"
+   "md5": "c3830fffbc92188196db4c2bb875f3af",
+   "sha256": "ab0b51b53b846a7289fa78c67de60d0a6d73ba9439ce8249fe182b21a2a21390"
   },
   {
    "path": "recompiler/bundle/runtime/include/amf_packet.h",
    "bytes": 4099,
-   "md5": "fc5422d36e9b6d083e506614ef8bfffb"
+   "md5": "fc5422d36e9b6d083e506614ef8bfffb",
+   "sha256": "42bee503bdcca70eec0fdc34a20c2db720bba915a2eb89d5eb2fd9658cf9b64f"
   },
   {
    "path": "recompiler/bundle/runtime/include/common.h",
    "bytes": 420,
-   "md5": "6e5aed0c86a0c96e92cce186c0e12dc7"
+   "md5": "6e5aed0c86a0c96e92cce186c0e12dc7",
+   "sha256": "b39a6c3ecbd3d51ac73213ef26365abc3054f454ed57a8f59b1f7babb27aea75"
   },
   {
    "path": "recompiler/bundle/runtime/include/curve_flatten.h",
    "bytes": 4174,
-   "md5": "13282798aeaba6cf6b322fcd6e9058f2"
+   "md5": "13282798aeaba6cf6b322fcd6e9058f2",
+   "sha256": "1ef756d5524b3e8e2400543fa0aac9f4600409fd0c4c79a85681250a79f92da1"
   },
   {
    "path": "recompiler/bundle/runtime/include/dialog_events.h",
    "bytes": 2888,
-   "md5": "1936e85ca6d656bf4a852e0bfbbd4b3e"
+   "md5": "1936e85ca6d656bf4a852e0bfbbd4b3e",
+   "sha256": "f2980627a6c55f566105ea44fed6691c373c284e63b407bf06588d1468f1c7d7"
   },
   {
    "path": "recompiler/bundle/runtime/include/gradient_ramp.h",
    "bytes": 6457,
-   "md5": "0fc39ce52700d15d65b745b0fa99925a"
+   "md5": "0fc39ce52700d15d65b745b0fa99925a",
+   "sha256": "b419cba9480dc9887970129b259a818cde49c624acd93a6cb01d27c694034200"
   },
   {
    "path": "recompiler/bundle/runtime/include/socket_events.h",
    "bytes": 3943,
-   "md5": "8bb72b664ff9b8df7493ea0185dcf193"
+   "md5": "8bb72b664ff9b8df7493ea0185dcf193",
+   "sha256": "5b0e34cec2992b81ddc59e00c7ffc24f5e4d4a5dd9aae7abc427e9bb0050daa0"
   },
   {
    "path": "recompiler/bundle/runtime/include/utils.h",
    "bytes": 5292,
-   "md5": "a6a60e6894fed4442255c219535a8b0d"
+   "md5": "a6a60e6894fed4442255c219535a8b0d",
+   "sha256": "c746e8c0c5b6ac839916a5f5a3f88eb986adc6ed20edbc3042f867df79260d21"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/action.h",
    "bytes": 53518,
-   "md5": "23ff8569fc689a2dc5bf64f27c706ff6"
+   "md5": "23ff8569fc689a2dc5bf64f27c706ff6",
+   "sha256": "3540464b2c20a839fc1ce31ceba31cd3b63bbbcd7aff904f33eeee023d993f4b"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/action_internal.h",
    "bytes": 19710,
-   "md5": "15f309c6df1c1d373f69b076f282932c"
+   "md5": "15f309c6df1c1d373f69b076f282932c",
+   "sha256": "ee9d550d014e7b148aa6e9751baffa6368095b36b502ec692cd1f81da7eac350"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/action_queue.h",
    "bytes": 15268,
-   "md5": "d677e99e03174bb84cf64d2c65def647"
+   "md5": "d677e99e03174bb84cf64d2c65def647",
+   "sha256": "2dee96c27246f08c88e8ae71638ce798ba4286f028bfb53896af2cd191691065"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/actiondate.h",
    "bytes": 1820,
-   "md5": "f5e8c9991412019962b16317d55277e7"
+   "md5": "f5e8c9991412019962b16317d55277e7",
+   "sha256": "c7effed0dcfc331e7efa9fb3f77eb0cbc17e6e80b32493e2d7aa31213ed391ef"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/actionmath.h",
    "bytes": 1835,
-   "md5": "f621c3092a0c390d738066c2a91a7f8d"
+   "md5": "f621c3092a0c390d738066c2a91a7f8d",
+   "sha256": "cf3acc2a01f06c86cf064ed8b586af7c93db80e48baf2100d8c20614785064bb"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/actionrando.h",
    "bytes": 1359,
-   "md5": "72c2b9755666a555d0f384868ac863bd"
+   "md5": "72c2b9755666a555d0f384868ac863bd",
+   "sha256": "800ea6a1f3ced4cbd52e0688926c85d9a42ab261f852964274b00c9d9d284801"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/actionregclass.h",
    "bytes": 3380,
-   "md5": "25a316c126a56592438287089d01842b"
+   "md5": "25a316c126a56592438287089d01842b",
+   "sha256": "a9b0ab7f4e116b8d2404215eda49571baa71a85b34ae1ce8230b259092edaa43"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/actiontimer.h",
    "bytes": 2214,
-   "md5": "c4f73b46d8284c6dd59354b2fc5f0dae"
+   "md5": "c4f73b46d8284c6dd59354b2fc5f0dae",
+   "sha256": "982a111becaa2ee81843b1073bd9ab236507f5ec47f1786d29539b9c0d451d0a"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/avm1_amf.h",
    "bytes": 4855,
-   "md5": "103a1e2c567f6b9931d5fb062d7704cd"
+   "md5": "103a1e2c567f6b9931d5fb062d7704cd",
+   "sha256": "55932741ece18b55759ca1dea46ac02eccda4bfc4cabfcaedf0c9a22744e26c7"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/object.h",
    "bytes": 17314,
-   "md5": "803493444832029cb6d2314c212174e1"
+   "md5": "803493444832029cb6d2314c212174e1",
+   "sha256": "26aff0569e3d9d7ec5a096ed2c49b2378233cfedd25a0a0bf7d215f96d204dda"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/rando_ap.h",
    "bytes": 2326,
-   "md5": "986e0ebea30de917158f0a3aca414f47"
+   "md5": "986e0ebea30de917158f0a3aca414f47",
+   "sha256": "64acd048464466ba214a5402a3da1c2795fa0f3b1eed6a2a571cd20c2d3e3669"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/sprite_frame_scripts.h",
    "bytes": 3888,
-   "md5": "df52e0389866e4ad49b333ccdc4dffb0"
+   "md5": "df52e0389866e4ad49b333ccdc4dffb0",
+   "sha256": "33615ae1aedfe8a83442e3046349f96c6f9f06b31f1c1151095c99615eb2b459"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/stackvalue.h",
    "bytes": 681,
-   "md5": "2b955e9e10934b61c314ec9f349cadea"
+   "md5": "2b955e9e10934b61c314ec9f349cadea",
+   "sha256": "919614ee4f715b141344b4e3f96916bfbd3e79422d4d8fabad86f2f1e4c350ac"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/variables.h",
    "bytes": 861,
-   "md5": "5a717a5bc3f7bf35344e100fcb1eac01"
+   "md5": "5a717a5bc3f7bf35344e100fcb1eac01",
+   "sha256": "1b16615835cb62f5ec85efd4958975d420f4626abd8a30853da08b2a3b75376c"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/video_codec.h",
    "bytes": 3950,
-   "md5": "c5e10e89633b5be83783bc9f1ba11e19"
+   "md5": "c5e10e89633b5be83783bc9f1ba11e19",
+   "sha256": "8374223471d786605673b03132444270944e871177bc45d5a5ffb1d2c5f54223"
   },
   {
    "path": "recompiler/bundle/runtime/include/audio/audio.h",
    "bytes": 5548,
-   "md5": "f494bac0c9e71003a0ab06f3ab4ee402"
+   "md5": "f494bac0c9e71003a0ab06f3ab4ee402",
+   "sha256": "7469c8f81f4c8c3b7c97cddfbce406666432718caabca0e7397e41ee8624d60d"
   },
   {
    "path": "recompiler/bundle/runtime/include/audio/minimp3.h",
    "bytes": 76802,
-   "md5": "8b08e5fee655453f27676ab806319cc0"
+   "md5": "8b08e5fee655453f27676ab806319cc0",
+   "sha256": "5fb296a790734772b65a5514438cc06d14f24e539c13475ff2a7f737681c82c0"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_abc.h",
    "bytes": 32811,
-   "md5": "39fc81343f9b71533f54caadad81594c"
+   "md5": "39fc81343f9b71533f54caadad81594c",
+   "sha256": "07d16fb36ac6dfcb2b40f09a66c9cbc97a6fdd02bc58c98f05c18416803c4218"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_class.h",
    "bytes": 18419,
-   "md5": "e84e4217c905f0533e720529efd98bf8"
+   "md5": "e84e4217c905f0533e720529efd98bf8",
+   "sha256": "5ce67765bd8c58a32c4df70bbe234e1e926157e341ff14f5bc468d41a392fb97"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_cpu_raster.h",
    "bytes": 5112,
-   "md5": "524ce9334952e1a6b6f12067373c3b8d"
+   "md5": "524ce9334952e1a6b6f12067373c3b8d",
+   "sha256": "6da5b3bd7c451e900a51ebc2032ffa6248a4b3c61c419994a295b03e1cc883f2"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_e4x.h",
    "bytes": 13327,
-   "md5": "07737c9c4f9a8ea37b515b096cb63deb"
+   "md5": "07737c9c4f9a8ea37b515b096cb63deb",
+   "sha256": "294fe86062c8a7ed195342a0bd91a60c82a5b55aad47b6927d0ddc516a6f60f6"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_error.h",
    "bytes": 8705,
-   "md5": "e3aa1ca1f8a08c240b8d5c2bb08e453b"
+   "md5": "e3aa1ca1f8a08c240b8d5c2bb08e453b",
+   "sha256": "4f759540a92edf7f0d61b9c6d302222dd919357d6ed11863432d646ebbfad4e4"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_filters.h",
    "bytes": 6068,
-   "md5": "d1813df2bd4b2bd692a1abba3c99744c"
+   "md5": "d1813df2bd4b2bd692a1abba3c99744c",
+   "sha256": "50cbcf48f3dc37435f8286b63e490ad877312d074de50ecbf79430ceb42259b8"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_flixel.h",
    "bytes": 4437,
-   "md5": "319c362cb62dab3871958ad2aa220dfc"
+   "md5": "319c362cb62dab3871958ad2aa220dfc",
+   "sha256": "39472f37ebbacdd8298b23fe076bc3b910792ece8bb75f44dacb1384d372824a"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_gc.h",
    "bytes": 8032,
-   "md5": "9b1fe5f65f2bca317f74703f81a8c8c1"
+   "md5": "9b1fe5f65f2bca317f74703f81a8c8c1",
+   "sha256": "c6184307981c67e4227dd79a44cb2022e21ba4b1aa724442a66b5b9d7e54c2ce"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_globals.h",
    "bytes": 62053,
-   "md5": "0214e3571b96e53cdf6789d77ffa7092"
+   "md5": "0214e3571b96e53cdf6789d77ffa7092",
+   "sha256": "e707f50aa978fb7de32edaec7ce451a29d681080320c6e39a818f2e7590ccbdc"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_main.h",
    "bytes": 4458,
-   "md5": "17ebeb92bfc68d00f83b8fb0242da540"
+   "md5": "17ebeb92bfc68d00f83b8fb0242da540",
+   "sha256": "872d4d9f0ce136106526753d430b8ad360c3d2977bf0512cda12d42c4dba7d17"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_object.h",
    "bytes": 10346,
-   "md5": "3daa5f71675f956b658122e2800bf661"
+   "md5": "3daa5f71675f956b658122e2800bf661",
+   "sha256": "123320bda3e4fa2902bf72b3341d9578634af676198ae6e6ba4ce23e52086634"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_ops.h",
    "bytes": 44417,
-   "md5": "2d68b0ffd7f90fe345a1a95e9853ab0c"
+   "md5": "2d68b0ffd7f90fe345a1a95e9853ab0c",
+   "sha256": "cd17a4df5aee0aa136c31b5c7f71c5de01025fbdcd3d53dfff9fe2e26e90e93d"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_value.h",
    "bytes": 5749,
-   "md5": "bd8cc2d1cbe547ddee88400239ab37d9"
+   "md5": "bd8cc2d1cbe547ddee88400239ab37d9",
+   "sha256": "d2006f751a4f4af8df7a0ca1138b1bc1a8911e2be0c0a0db916019a90a0d17a9"
   },
   {
    "path": "recompiler/bundle/runtime/include/flashbang/flashbang.h",
    "bytes": 2707,
-   "md5": "9c65414b054540d72b02b9b8253cee0f"
+   "md5": "9c65414b054540d72b02b9b8253cee0f",
+   "sha256": "b5d3938a25c7af7babe05bf96fd29482eedf06bdedf1f040e2f6bde690dbc0ff"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/capture.h",
    "bytes": 1235,
-   "md5": "ec741ed66a3834c502fe45f3c334fab5"
+   "md5": "ec741ed66a3834c502fe45f3c334fab5",
+   "sha256": "03a7b9df662c5e1937dacaddb0669aad8c6639fa668a81267cb27fdea9b998d7"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/generated_data.h",
    "bytes": 3077,
-   "md5": "74672102297df7c99d98b8381ea493d2"
+   "md5": "74672102297df7c99d98b8381ea493d2",
+   "sha256": "8b869cf3d2544ced367dde8ab3d2335c8f1bf4e7602f548a4a8cf249dff362d1"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/hit_test.h",
    "bytes": 1018,
-   "md5": "a0e735daa5ca425fe21932c28bd692d9"
+   "md5": "a0e735daa5ca425fe21932c28bd692d9",
+   "sha256": "06e5295bbf3846f78aa8ed5fb530dd2eb2d199297ea084dd28052e542e000af6"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/recomp.h",
    "bytes": 802,
-   "md5": "9a2ce1621df7ec36193f2fdbadec85fc"
+   "md5": "9a2ce1621df7ec36193f2fdbadec85fc",
+   "sha256": "aa4fe433fe3b5d8359bc4fa3ce010dabde37f889cbff56ff4ccb619e46258c24"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/swf.h",
    "bytes": 31544,
-   "md5": "0ed6650c153eaf22215e88fda7123681"
+   "md5": "0ed6650c153eaf22215e88fda7123681",
+   "sha256": "fcdd32350d44125a40f764085e9ea5efa82b777330a3fe675de2867aabe86166"
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/tag.h",
    "bytes": 42373,
-   "md5": "1e0f70f6e603023c7c816dd3b33b2777"
+   "md5": "1e0f70f6e603023c7c816dd3b33b2777",
+   "sha256": "8e7958c54c9c5b02df4ac7bcdb55a631a78ad5e7ab6950d2dec2ace4b7d8590f"
   },
   {
    "path": "recompiler/bundle/runtime/include/memory/heap.h",
    "bytes": 6412,
-   "md5": "d53e96fadcf25940577f7a4572ab1673"
+   "md5": "d53e96fadcf25940577f7a4572ab1673",
+   "sha256": "693d341999811e5b00e3e392d8040b39d1a24002275f2d19372420d6a2f2c754"
   },
   {
    "path": "recompiler/bundle/runtime/include/rendering/render_webgpu.h",
    "bytes": 30969,
-   "md5": "408e515c23df6213d1a0762cfd041e92"
+   "md5": "408e515c23df6213d1a0762cfd041e92",
+   "sha256": "a84f681cca469dab59f5223d759107ffc30918eb05ca7cac433fa38e6ac288f4"
   },
   {
    "path": "recompiler/bundle/runtime/include/rendering/renderer.h",
    "bytes": 9655,
-   "md5": "210bef5e5a0ed963f33ef04e513545fa"
+   "md5": "210bef5e5a0ed963f33ef04e513545fa",
+   "sha256": "b6c0c9fd4b22a613f600bd151f85c58550c814ee0391394bfaa21946a65836d0"
   },
   {
    "path": "recompiler/bundle/runtime/lib/c-hashmap/map.c",
    "bytes": 9365,
-   "md5": "98453853ae23ee9f8be5d9505ff01053"
+   "md5": "98453853ae23ee9f8be5d9505ff01053",
+   "sha256": "e518853325f8de98400e7ded79d7597e39af4466b3001645a1f59bb806fa0e64"
   },
   {
    "path": "recompiler/bundle/runtime/lib/c-hashmap/map.h",
    "bytes": 3077,
-   "md5": "70d3c5c7ee90559f8031b856978c7d2b"
+   "md5": "70d3c5c7ee90559f8031b856978c7d2b",
+   "sha256": "cb0fea149a15568c63874daf1bfd500bd68267790d71778a8f2ec9ce0305705f"
   },
   {
    "path": "recompiler/bundle/runtime/lib/o1heap/o1heap.c",
    "bytes": 24730,
-   "md5": "1178d691de5f5a8ea15c2527e5591251"
+   "md5": "1178d691de5f5a8ea15c2527e5591251",
+   "sha256": "15c93116ac76311e9da466b80a91bac4a3a7fa036b945a2ab37aca654cf8568b"
   },
   {
    "path": "recompiler/bundle/runtime/lib/o1heap/o1heap.h",
    "bytes": 8526,
-   "md5": "5a19b1476c9849f6a9d9c63370fde29d"
+   "md5": "5a19b1476c9849f6a9d9c63370fde29d",
+   "sha256": "012131d292e95961578fa1d1e11eb8d22d48db331f7d12a32daf4b3d054c1be3"
   },
   {
    "path": "recompiler/bundle/runtime/lib/stb/stb_image.h",
    "bytes": 283010,
-   "md5": "27932e6fb3a2f26aee2fc33f2cb4e696"
+   "md5": "27932e6fb3a2f26aee2fc33f2cb4e696",
+   "sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3"
   },
   {
    "path": "recompiler/bundle/runtime/src/amf_packet.c",
    "bytes": 4626,
-   "md5": "90aa01212d9a57c9b22a1374b4a2a010"
+   "md5": "90aa01212d9a57c9b22a1374b4a2a010",
+   "sha256": "70153d91c6a960ac7b60f6d005ba089c7c88939bc5c9c95c25165cbaf42eef42"
   },
   {
    "path": "recompiler/bundle/runtime/src/utils.c",
    "bytes": 109611,
-   "md5": "6d33db80196a7f60561a429e540d017f"
+   "md5": "6d33db80196a7f60561a429e540d017f",
+   "sha256": "f225fb4c87a65170e3d0434e57bd3349f03eb9aca4e10d21b426550d7de5334b"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/action.c",
    "bytes": 3342018,
-   "md5": "b77861b2036cbb60c5fabea936def74a"
+   "md5": "b77861b2036cbb60c5fabea936def74a",
+   "sha256": "1af392e2aa68891fbd90acc3a2891e3020d977a48a0d16f451c9b5da2d7000aa"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/action_queue.c",
    "bytes": 29539,
-   "md5": "af8f52609355c4bb60aadc8b424f27fa"
+   "md5": "af8f52609355c4bb60aadc8b424f27fa",
+   "sha256": "2db23edc94a66a333e32f047a9d5b6dd09d5632c35cbf38998de7d77c7a75c9e"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/avm1_amf.c",
    "bytes": 55663,
-   "md5": "058f3de2f09a76ca77666dbf1f38e7de"
+   "md5": "058f3de2f09a76ca77666dbf1f38e7de",
+   "sha256": "090cd7017149bd499111623db058934535b4665bcba7271d2330f5e95cb797fa"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/date.c",
    "bytes": 45286,
-   "md5": "aa90502bb8a3de072cb810a60b80ca83"
+   "md5": "aa90502bb8a3de072cb810a60b80ca83",
+   "sha256": "99f2a4da133a0e517ad27a1b5017762a0eb0faea3ab20028583f86c3187060d3"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/image_decode.c",
    "bytes": 2137,
-   "md5": "38def7a5ffd94e42ef61ce53b0887a74"
+   "md5": "38def7a5ffd94e42ef61ce53b0887a74",
+   "sha256": "f399f3332830b16b5f2429ef3e4dc24bc543b884c986f238e9cb5d13bcd49926"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/math.c",
    "bytes": 18431,
-   "md5": "2f6031e6446f40ea98d5c01715804d7a"
+   "md5": "2f6031e6446f40ea98d5c01715804d7a",
+   "sha256": "80fbc3d45f941dc646008a002deb38222cda7120619fc7be71dd65d3f7053cac"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/object.c",
    "bytes": 74227,
-   "md5": "f8fdb1453a7a114aec0e15a9c5cb5d38"
+   "md5": "f8fdb1453a7a114aec0e15a9c5cb5d38",
+   "sha256": "5ed8523652294ad8e46c18fd23c6094971bde0dddff44545d608bc0e6d4a528d"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/registered_class.c",
    "bytes": 17843,
-   "md5": "18b06d9505bbfdd8149994d94c8d7880"
+   "md5": "18b06d9505bbfdd8149994d94c8d7880",
+   "sha256": "38c37a03476951a9b3d48bb730844303f64d6990cd522d4040b46cbc47adf2ae"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/sprite_frame_scripts.c",
    "bytes": 3203,
-   "md5": "186d546c30b2eed64d3bec072fe43057"
+   "md5": "186d546c30b2eed64d3bec072fe43057",
+   "sha256": "35f80b2f849874db5d0d10e680384519b3fcbb9f694c33f64730ea44c75f8204"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/timer.c",
    "bytes": 20682,
-   "md5": "5fee3a243d8bba51470e039a650acebe"
+   "md5": "5fee3a243d8bba51470e039a650acebe",
+   "sha256": "70bb6c78c5015c9afd5c4f1d25a4e4cf1ed7440072717ebe1e6faf8e7467b74a"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/unicode_case_tables.h",
    "bytes": 45189,
-   "md5": "740fea0fc627ae14ccec8bc6ae0422a2"
+   "md5": "740fea0fc627ae14ccec8bc6ae0422a2",
+   "sha256": "fd03e27bdc698ae142041216f4a88e8d7f70fbdccc3bb91987eba198fba797d3"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/variables.c",
    "bytes": 9715,
-   "md5": "0b53a04c42fd0da309d535a40ab6b157"
+   "md5": "0b53a04c42fd0da309d535a40ab6b157",
+   "sha256": "de88096fe4b737608c48f9f413a3ebcdefa8c5b8c3b7cd6150fa08b484399de6"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/video_codec.c",
    "bytes": 25807,
-   "md5": "5ead82d8e055f9f28467b839ad6f6faa"
+   "md5": "5ead82d8e055f9f28467b839ad6f6faa",
+   "sha256": "967696b4f0d6f02c629e259ba7cd70b11d3547feefeaa483d4f6466f46456e74"
   },
   {
    "path": "recompiler/bundle/runtime/src/audio/audio.c",
    "bytes": 19571,
-   "md5": "37b30a4b0405b8369433ae0c778ae42c"
+   "md5": "37b30a4b0405b8369433ae0c778ae42c",
+   "sha256": "690c1fb783e1f99d47bca652338a7228a7e2b4f010620f843c7adc684edffecb"
   },
   {
    "path": "recompiler/bundle/runtime/src/audio/audio_output_web.c",
    "bytes": 3225,
-   "md5": "14bf9cf0fdf3b65334485caf69d832a5"
+   "md5": "14bf9cf0fdf3b65334485caf69d832a5",
+   "sha256": "fda08a8c77d6854084d16bac108f49dd2a89a5ecee16f5560e07b9fcf76281bf"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_amf.c",
    "bytes": 67591,
-   "md5": "471a2f0e1d2d0730d2cd791179146eb1"
+   "md5": "471a2f0e1d2d0730d2cd791179146eb1",
+   "sha256": "e717754e0c8788d65414194d769c5c0c9761fad2f9bce03272e08109a414e159"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_array.c",
    "bytes": 41902,
-   "md5": "7ea799c9034842135049e1b65216f356"
+   "md5": "7ea799c9034842135049e1b65216f356",
+   "sha256": "e7b52ead6a2bdb7409a8ff52b8e51125dc08c81f409ffe65e5670446a039fec7"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_bitmap.c",
    "bytes": 155224,
-   "md5": "48c2e21a7b1e2f35f5e299e2ba4ac8e2"
+   "md5": "48c2e21a7b1e2f35f5e299e2ba4ac8e2",
+   "sha256": "0ae00f9b3e644351ed25fa51232f4688b08736b4425a65f91234d14fd8514ead"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_bytearray.c",
    "bytes": 51731,
-   "md5": "ee31f76d6c0a50819a9f06bea934cffe"
+   "md5": "ee31f76d6c0a50819a9f06bea934cffe",
+   "sha256": "b508c0a8fe126942b003ba529a8262f22a1ddd3d77c195876e6321254336aac4"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_class.c",
    "bytes": 78877,
-   "md5": "c304dd633ab5d5ab220a7353c1338338"
+   "md5": "c304dd633ab5d5ab220a7353c1338338",
+   "sha256": "505109ac86dc0cb742e25907619cd523139f842d55218dc6195b697155f7160b"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_cpu_raster.c",
    "bytes": 22014,
-   "md5": "409cc333553a5e2142cf6cc36f01dda0"
+   "md5": "409cc333553a5e2142cf6cc36f01dda0",
+   "sha256": "2f3013800d1d34187e92c3643022c003a64499d8ff4ee14605e13d82e88d82f8"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_date.c",
    "bytes": 35928,
-   "md5": "d6adf3c9ac6875f4be595125b06a0167"
+   "md5": "d6adf3c9ac6875f4be595125b06a0167",
+   "sha256": "39d81a284f9129c3aeb4dea4e06aee5fb2f1c67647313a74d780ada28a2027f8"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_dictionary.c",
    "bytes": 1782,
-   "md5": "3d7503b789795c28bcd7e7dacbd0b2eb"
+   "md5": "3d7503b789795c28bcd7e7dacbd0b2eb",
+   "sha256": "d739e033a54be92fdb71ae41dc824f818464f3ad9c417d720fd5f580c8be0652"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_display.c",
    "bytes": 801045,
-   "md5": "1ca5242e2eafeb4c3f51941afb6d7583"
+   "md5": "1ca5242e2eafeb4c3f51941afb6d7583",
+   "sha256": "76ce3b1758c4809f9adbd3046ebd18220a2e6ba88abe283eb2ab061998c1fef3"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_e4x.c",
    "bytes": 68259,
-   "md5": "0ea54e0b559bbcd6e14037dea8a5455a"
+   "md5": "0ea54e0b559bbcd6e14037dea8a5455a",
+   "sha256": "68e285dd93a7dbd388db0feb6c81306565940087a122b970923b254da3501b79"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_error.c",
    "bytes": 92359,
-   "md5": "7c0441ce5713c86654572049c271ecfd"
+   "md5": "7c0441ce5713c86654572049c271ecfd",
+   "sha256": "c109abcf23033b69b81c4f51a88e41b4abbbbf8b570b0197c71c6de2af49bafd"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_events.c",
    "bytes": 100339,
-   "md5": "91145409502a4f583778b7ec222394e9"
+   "md5": "91145409502a4f583778b7ec222394e9",
+   "sha256": "33e18cd84c43d9ec8114e261449afd8d60b8fd75182d611cfe04a9ffe01bbc8a"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_external.c",
    "bytes": 14323,
-   "md5": "d0a0c13c4789c4fb211c65c5f2364384"
+   "md5": "d0a0c13c4789c4fb211c65c5f2364384",
+   "sha256": "a17611a12b6df5dcc0693834e9183ae966d390c57bd9789934a1a07209e1e8f5"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_filters.c",
    "bytes": 48015,
-   "md5": "c27ea03e5f97fafb77a024e030778ee0"
+   "md5": "c27ea03e5f97fafb77a024e030778ee0",
+   "sha256": "b542097ec62ec6630416e9b356241a0c490dd96b9a72dafd1cbdbe7093bc7f8e"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_flixel.c",
    "bytes": 50245,
-   "md5": "5f1307d90d3b7c2841993bd070504ca1"
+   "md5": "5f1307d90d3b7c2841993bd070504ca1",
+   "sha256": "b624616990db0413c4f537ac83fd46424267e7f5f899b10c99824725fecc506d"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_function.c",
    "bytes": 15902,
-   "md5": "8c3f74a6d9d035aca911f457dd171c6e"
+   "md5": "8c3f74a6d9d035aca911f457dd171c6e",
+   "sha256": "bbbcf80262651b4accf215714b590fdcabc05b691296bf7ae0f94af30ae9b72a"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_gc.c",
    "bytes": 46032,
-   "md5": "1ec7571846d45fccd6b1056e49648ac4"
+   "md5": "1ec7571846d45fccd6b1056e49648ac4",
+   "sha256": "321bf298b711607efa41daba351eac13fefd9ce94f0c23a92293e4b7306cc191"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_globals.c",
    "bytes": 407732,
-   "md5": "664ffcccb54bc0340b0ba1f14c6a463b"
+   "md5": "664ffcccb54bc0340b0ba1f14c6a463b",
+   "sha256": "31418a1c3d1938a4d1d385dcaf35af1ea2b4f6af48d72bedfbb10b3a48d8892e"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_json.c",
    "bytes": 34367,
-   "md5": "83aa939ada1f158ac18bc6965ae58e15"
+   "md5": "83aa939ada1f158ac18bc6965ae58e15",
+   "sha256": "c1ffe8066c314b4a69698af49e16f6da76b70e840c5b519ffd62116afa1e7cda"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_main.c",
    "bytes": 37668,
-   "md5": "5005a4333a71284bdaecbbea4756028b"
+   "md5": "5005a4333a71284bdaecbbea4756028b",
+   "sha256": "03eaabd5e284b79c691e105200c2226a26db31215428995d427126a2f9d55f4f"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_media.c",
    "bytes": 71024,
-   "md5": "0a6f92646998b235fcf9dbc9e7ee7f7f"
+   "md5": "0a6f92646998b235fcf9dbc9e7ee7f7f",
+   "sha256": "844f3d701f71c503a88f17424d2504a42a2a91ff46cddf7fcfc4bdd4ec52d42f"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_mops.c",
    "bytes": 9916,
-   "md5": "6f9a7a6bcace5154d57d2e206de0bafc"
+   "md5": "6f9a7a6bcace5154d57d2e206de0bafc",
+   "sha256": "8d3164a098263549f2e3e241dbc8af84cef59a9831e1ffac59881e61d9e4bd61"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_net.c",
    "bytes": 109829,
-   "md5": "d0fb275856179d9cb687d214f8bf3a4a"
+   "md5": "d0fb275856179d9cb687d214f8bf3a4a",
+   "sha256": "1d9e8cb520dfbc938a8b113e0e775280f9ee6c284a52840b9806954c1fb4e595"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_nsqname.c",
    "bytes": 14637,
-   "md5": "56e98c988cfe30f7c8c3e8db8b514e70"
+   "md5": "56e98c988cfe30f7c8c3e8db8b514e70",
+   "sha256": "57c989794696d1a425d26e4a0c7b060f3411967963b7bbd6f316ba78cb90441a"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_number.c",
    "bytes": 39850,
-   "md5": "c3c9f61240bec6fc009e1b1ef876236a"
+   "md5": "c3c9f61240bec6fc009e1b1ef876236a",
+   "sha256": "a8c44a0beb6acafc11790112206f30507af7a787fa70fcb0b6eda484c3a9b61f"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_object.c",
    "bytes": 19226,
-   "md5": "8d739320cdedafd5b0cda98196d2d814"
+   "md5": "8d739320cdedafd5b0cda98196d2d814",
+   "sha256": "eba15c901aa7698c3249f8ebd488a96c565ed6f6ef43a6a77ecafaf28354015c"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_ops.c",
    "bytes": 179479,
-   "md5": "93887ab75efe5936875b131740a38c25"
+   "md5": "93887ab75efe5936875b131740a38c25",
+   "sha256": "cf9cb2effff95b7d164ba755cd5d56f209ef38ca1e1affc181472478b2c8e336"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_pixelbender.c",
    "bytes": 73316,
-   "md5": "a9246b0d963b8db81de7d2d953ebdddc"
+   "md5": "a9246b0d963b8db81de7d2d953ebdddc",
+   "sha256": "145ad49a0daf30f1626523de5a62fa99229f9a93881a1beace42b9f5f4d12945"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_proxy.c",
    "bytes": 8006,
-   "md5": "94ea0e317bd6c53df8797902b7a9459a"
+   "md5": "94ea0e317bd6c53df8797902b7a9459a",
+   "sha256": "81b7e29851fa2c1a442a3f8f86e119df49ba25f68489e958212e925fb181215d"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_regexp.c",
    "bytes": 39798,
-   "md5": "1cfcd87dfec584e85d0a7fdf828d6ca5"
+   "md5": "1cfcd87dfec584e85d0a7fdf828d6ca5",
+   "sha256": "84ef65edc1cd47ae051fcaa58c80bbf92164fabeec2d545ffe83910177334355"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_stage3d.c",
    "bytes": 186869,
-   "md5": "6574d2220b032cead278394ac839c1b4"
+   "md5": "6574d2220b032cead278394ac839c1b4",
+   "sha256": "44930d9aa18b5dead7b10d80e200e6c942c123f6d936f67a098dc66f67497f9c"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_string.c",
    "bytes": 25829,
-   "md5": "d898db3f12891618fd05fd347a11b753"
+   "md5": "d898db3f12891618fd05fd347a11b753",
+   "sha256": "9ce497fb870108a997127bfee69674ad53a92bce0166fddaf9f84a1cd2e39702"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_text.c",
    "bytes": 382028,
-   "md5": "54a5843a136af6255debffa656974207"
+   "md5": "54a5843a136af6255debffa656974207",
+   "sha256": "9990fd02a22ac5fc5a9e229ff4265975fb4602c4e0c20c46c0e85c9ed005996c"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_value.c",
    "bytes": 38061,
-   "md5": "4981b4eabdc701a30b2797b7880d22cd"
+   "md5": "4981b4eabdc701a30b2797b7880d22cd",
+   "sha256": "27bc74189ab6165f0244abf6fccc2632439bc9e0d1623828b9258e9d21534a06"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_vector.c",
    "bytes": 43712,
-   "md5": "484324aa350c8e037404d68f1fc67091"
+   "md5": "484324aa350c8e037404d68f1fc67091",
+   "sha256": "45662167d5ccbba92993579c6186bf0803238a5c7cabbf10a02dba1fba875938"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_xml.c",
    "bytes": 117640,
-   "md5": "98af565c8f79d0109d8bd974a689f885"
+   "md5": "98af565c8f79d0109d8bd974a689f885",
+   "sha256": "684e915e9a8049b9e95d4e583e993a05356dbcf604ad74fa051f2d18213f2a96"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/graphics_stubs.c",
    "bytes": 23997,
-   "md5": "23613ba42f6086f912c29770d1807f58"
+   "md5": "23613ba42f6086f912c29770d1807f58",
+   "sha256": "7e10ef7a6ae3febdf6df3405f8305afc5067ae1f8c970801026a8e6a113c0919"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/hit_test.c",
    "bytes": 3432,
-   "md5": "d1309d2fdd7fe8a27f3e4c18140e1f3c"
+   "md5": "d1309d2fdd7fe8a27f3e4c18140e1f3c",
+   "sha256": "f5ad4bda2018c45218fd847357d9b937caaa02990aaec74d57913f30efbbd783"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/ng_shared.c",
    "bytes": 99959,
-   "md5": "72d70cfb5ef89dad19e37de32d8bcdd6"
+   "md5": "72d70cfb5ef89dad19e37de32d8bcdd6",
+   "sha256": "08b478480f1338bf3bfc2acdaf73fde074f65e71d10bd9e38580376a0a77cd97"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/shape_hit_test.c",
    "bytes": 31577,
-   "md5": "e33968a7b9137c845cf0b6c2f7edf47c"
+   "md5": "e33968a7b9137c845cf0b6c2f7edf47c",
+   "sha256": "3a3c1892780d7ee3b026543ef6226fba3ab417298b82de61a91e5b4d05774b9c"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/stb_image_impl.c",
    "bytes": 464,
-   "md5": "6e4777407976e3d5e6fcee0c78071594"
+   "md5": "6e4777407976e3d5e6fcee0c78071594",
+   "sha256": "ec6b822be40de7cce0bc3ad22bbe74ccb83c87a9aac5e0d0da17f87bb28f3231"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/swf.c",
    "bytes": 85452,
-   "md5": "fd9c9f1589606c52ce8f00fd5c192465"
+   "md5": "fd9c9f1589606c52ce8f00fd5c192465",
+   "sha256": "130b5d3f0ea5142ea03468e882578b25bc914cce47aea7fc306a8343eb5931a1"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/tag.c",
    "bytes": 615949,
-   "md5": "a59c1e136c9c6df14346891ac22ecef0"
+   "md5": "a59c1e136c9c6df14346891ac22ecef0",
+   "sha256": "ec1dbc74db25851f289eb92dac7e646378d1eefa8ea627093b62e91c8fa178d3"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/tag_stubs.c",
    "bytes": 139176,
-   "md5": "fe3583e771114d1d17192f7466b60f25"
+   "md5": "fe3583e771114d1d17192f7466b60f25",
+   "sha256": "6aac2420106a90e27ff61bbe2c2bc7212dbf33aabfc6f36bcda9b02a794b743a"
   },
   {
    "path": "recompiler/bundle/runtime/src/memory/heap.c",
    "bytes": 18236,
-   "md5": "802d6e7ca72e6ac2a769ce3ca7dbeec0"
+   "md5": "802d6e7ca72e6ac2a769ce3ca7dbeec0",
+   "sha256": "c06894433a232cb3f5170c4b7e4c0d3e9275285a8b965988d54d815c947825fa"
   },
   {
    "path": "recompiler/bundle/runtime/src/rendering/render_webgpu.c",
    "bytes": 281125,
-   "md5": "e86f8e9fdd1f7c42bd4ad8803f5f587b"
+   "md5": "e86f8e9fdd1f7c42bd4ad8803f5f587b",
+   "sha256": "8555dcb546ca38312327286d8e79e964cf5af76c8892e8bb004ff70433729e03"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/bucketalloc.c",
    "bytes": 4982,
-   "md5": "35fc03fde10546c28fb9204b5b47c05e"
+   "md5": "35fc03fde10546c28fb9204b5b47c05e",
+   "sha256": "4bed9bf6e19d6386623fed80361f495707ac2fc255ddc4238f6b8dd5869d8f20"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/bucketalloc.h",
    "bytes": 2054,
-   "md5": "d650c09e4f0dab9038a800b0ab280b20"
+   "md5": "d650c09e4f0dab9038a800b0ab280b20",
+   "sha256": "024e5e198f94947f9fbc923ce38a693f49efa0d7f7af69e5010c08d1970086f3"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/dict.c",
    "bytes": 3491,
-   "md5": "ba3555ca85f7636c8981692a22bbb69f"
+   "md5": "ba3555ca85f7636c8981692a22bbb69f",
+   "sha256": "c9fdf76a43d947bdcf397eb56e3f94fbb040d65b7a5f295458d995896550b6f9"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/dict.h",
    "bytes": 2837,
-   "md5": "9cca8c3e4605f18200025a42fc5711ac"
+   "md5": "9cca8c3e4605f18200025a42fc5711ac",
+   "sha256": "692bdfd92af0c009b9d56fdfbbd51589f9303798bc75c43fb4fcbf5c6afd7f5a"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/geom.c",
    "bytes": 9741,
-   "md5": "0e30427ad439780f160a3083ca3b32c9"
+   "md5": "0e30427ad439780f160a3083ca3b32c9",
+   "sha256": "1b2ed092634483d7b9fd51c01609a68f1373bb0945b7e660f6abf65c8964ebb6"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/geom.h",
    "bytes": 3824,
-   "md5": "298eb735fa553702308ccb2bc0869968"
+   "md5": "298eb735fa553702308ccb2bc0869968",
+   "sha256": "dfc62f50e25c3ada66c9f1250f22f41b1e0fcafec825ae3310d8bf345accb170"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/mesh.c",
    "bytes": 25710,
-   "md5": "606bb9e65c1acc2c93a2f7520568cc7e"
+   "md5": "606bb9e65c1acc2c93a2f7520568cc7e",
+   "sha256": "0fa745fb0eb630ade395058e3821f3a4703d324dfb3c0fafbd9f844ef9349a50"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/mesh.h",
    "bytes": 12422,
-   "md5": "1e182869e6aee6191bca97a401fbd8d0"
+   "md5": "1e182869e6aee6191bca97a401fbd8d0",
+   "sha256": "dd63748ca12ccbb048cf77fd64497aca403c9e8dd3ce963527f5c5f480bb4835"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/priorityq.c",
    "bytes": 13316,
-   "md5": "6276c9a8387d328f042a7014a44aebe1"
+   "md5": "6276c9a8387d328f042a7014a44aebe1",
+   "sha256": "bf5185c5d8b0ba3628d5613cc7373ee96cf2a18117fb6ce3d34f31cc432c9a6f"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/priorityq.h",
    "bytes": 3777,
-   "md5": "221286857479363d76e74e861825b6c5"
+   "md5": "221286857479363d76e74e861825b6c5",
+   "sha256": "c9bba2a5f1d7349a6ef2369cc8fcb5cc6351cfd7720e8c6e42bba2c3ef2d3a5b"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/sweep.c",
    "bytes": 46877,
-   "md5": "68f3289e92ff1b1f0f25e228e4c71fbc"
+   "md5": "68f3289e92ff1b1f0f25e228e4c71fbc",
+   "sha256": "5a2f188e47ba6c1dd813c96569f16755c55e3024f5c6b161aacdb0f146d24724"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/sweep.h",
    "bytes": 3209,
-   "md5": "dce3fe564492a7b93e3b3935f6d37d19"
+   "md5": "dce3fe564492a7b93e3b3935f6d37d19",
+   "sha256": "a53d039fe6601e3259f0a0dd9e13b5e19e49164b5e903e43b4cd66c93de9c008"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/tess.c",
    "bytes": 29577,
-   "md5": "78410371e7a3abbebed5e965b9468ce9"
+   "md5": "78410371e7a3abbebed5e965b9468ce9",
+   "sha256": "8f6ad20e75400bb4e33ee4b2cb6ed4b6b1ef4ff51a7f7916eca65ce0674c3398"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/tess.h",
    "bytes": 3038,
-   "md5": "7e8bd836f73ed3bffc6ff1d3fde9f04f"
+   "md5": "7e8bd836f73ed3bffc6ff1d3fde9f04f",
+   "sha256": "b8c190ceb236a0c7975f2a628f340c6725a8f5e91778e9eb28b455548e2cc864"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/tesselator.h",
    "bytes": 11017,
-   "md5": "bec84197d0c102ad1075bbfec5e60554"
+   "md5": "bec84197d0c102ad1075bbfec5e60554",
+   "sha256": "8c7b9eae2b2856856970078522d7dd3416ca974f8d6e5610ae04c63622a444ac"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/7zTypes.h",
    "bytes": 9179,
-   "md5": "eaad273f968907ccfbbb979820c2bd3c"
+   "md5": "eaad273f968907ccfbbb979820c2bd3c",
+   "sha256": "9944ed24b9e52cb57035e44c812011c66caaa462ad4e9efdb86b12a47bba0056"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/Compiler.h",
    "bytes": 1253,
-   "md5": "df05df4baee7d841aa3ad1f783f83c0a"
+   "md5": "df05df4baee7d841aa3ad1f783f83c0a",
+   "sha256": "432fffe11231783e452fa0d7bbfc0412d6860e377291e00d54e0fdf01b029878"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzFind.c",
    "bytes": 25920,
-   "md5": "1c4e8d4807e9056d2eaec89421285fdf"
+   "md5": "1c4e8d4807e9056d2eaec89421285fdf",
+   "sha256": "dfd69e35c0e6df420c880f6d01822050477a1e3ee2348b0a35d218d1dd9f720b"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzFind.h",
    "bytes": 3570,
-   "md5": "8a7155e252ba45126bf50d2ef83bbbd7"
+   "md5": "8a7155e252ba45126bf50d2ef83bbbd7",
+   "sha256": "49d13c4edb9382b4598100166f0b91aedfc2e8a52df2921ed05fd5bfe755b2fa"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzHash.h",
    "bytes": 1824,
-   "md5": "8bc7b6b0fcf039bfbd2a936ed5b01b6d"
+   "md5": "8bc7b6b0fcf039bfbd2a936ed5b01b6d",
+   "sha256": "8303c1c37c1bb07cc91a1300b7b7e7d89070981e030549d63126453194b477b6"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzmaDec.c",
    "bytes": 33031,
-   "md5": "bc0f5b3b4ccdbffe90dbfd1278377002"
+   "md5": "bc0f5b3b4ccdbffe90dbfd1278377002",
+   "sha256": "e7387dcf8c26ee9a5e23ec3d92b76a650741fb6cc3f2e1c38c7501d601dc7f71"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzmaDec.h",
    "bytes": 7136,
-   "md5": "34d6d70022b3f0e9299f3668c88ae339"
+   "md5": "34d6d70022b3f0e9299f3668c88ae339",
+   "sha256": "f43c4023065b3fc6c230c309457645070cecef848e8a3a1c9c4e0aa54eb5c5ff"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzmaEnc.c",
    "bytes": 75082,
-   "md5": "cb1ba261c579f47242edef355a973bf5"
+   "md5": "cb1ba261c579f47242edef355a973bf5",
+   "sha256": "3c848e0151444c2a33d87ebe465796b55d0c3b1a66e842b7b0aa3cd85d5c3dea"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/LzmaEnc.h",
    "bytes": 3070,
-   "md5": "0e8c207c491137ee1dec992f10b50422"
+   "md5": "0e8c207c491137ee1dec992f10b50422",
+   "sha256": "474db10f1e485a744ecd560f7a9560a4e24888b46a34432910efd9b964c79299"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/Precomp.h",
    "bytes": 615,
-   "md5": "ff827c2f4484e514360e43cea5f00dec"
+   "md5": "ff827c2f4484e514360e43cea5f00dec",
+   "sha256": "71f8279ef9ed5cd8f630589a8f105bc429854ffccd0abcb259c5c195e154a57e"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/lzma_alone.c",
    "bytes": 5232,
-   "md5": "08672bf677ae465a2717d0755da267eb"
+   "md5": "08672bf677ae465a2717d0755da267eb",
+   "sha256": "6b50409f22641646b9df5c3815ffc0a897225dd95375ba5c214f5c76f996a3b2"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/lzma/lzma_alone.h",
    "bytes": 1297,
-   "md5": "d0978b6b84e530ffb715ef71fa19fb40"
+   "md5": "d0978b6b84e530ffb715ef71fa19fb40",
+   "sha256": "397f5bd8af47d65bfea30f290143983152838407d62bf898c58bd1ff3c863cb9"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/cutils.c",
    "bytes": 17798,
-   "md5": "e3dd4392d3765021c74fece1bd7e6fd9"
+   "md5": "e3dd4392d3765021c74fece1bd7e6fd9",
+   "sha256": "b73a403a59da30726257ddbdf5e399298941c1def997782ee0d4d33f796a80a2"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/cutils.h",
    "bytes": 11162,
-   "md5": "17e9d2d5624f0723d434d975e5207111"
+   "md5": "17e9d2d5624f0723d434d975e5207111",
+   "sha256": "d2da6d06a75b9e6c116c82b7a41df6bcc170c8b1779f374fa953ecf688eda647"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
    "bytes": 2887,
-   "md5": "761f050100c9569341f605d694214711"
+   "md5": "761f050100c9569341f605d694214711",
+   "sha256": "2a98d646089f3a72f25480116297c5fdb5b28fd9f815447273951f4ade4a115e"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.c",
    "bytes": 113209,
-   "md5": "80cdd505a2f5ebdbf26ac0f632f22184"
+   "md5": "80cdd505a2f5ebdbf26ac0f632f22184",
+   "sha256": "fdfcf86167029ab2c39c35730d4ae6875b7bbeb9406a0fcc886de4e9b1f5e2ac"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.h",
    "bytes": 2737,
-   "md5": "8bb32ac06bc841eaf5e24761813fd95d"
+   "md5": "8bb32ac06bc841eaf5e24761813fd95d",
+   "sha256": "f5c5ef1899f224dcc718422a22c789ef9d8b5b837b622818fcfaf681ae793446"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode-table.h",
    "bytes": 252492,
-   "md5": "7f7dacdbb77b5c181b5dea346a8820ad"
+   "md5": "7f7dacdbb77b5c181b5dea346a8820ad",
+   "sha256": "cf782bc7a07549e976f606bd3cb8555858482b279574554dcb8d46412986006c"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode.c",
    "bytes": 63617,
-   "md5": "f87b86851b71bef127bb4c9d3ce580fd"
+   "md5": "f87b86851b71bef127bb4c9d3ce580fd",
+   "sha256": "26203ae888c0582e7d0e2113f13db0c9b39dc7b0b3836d68fa308c54f7a0898c"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode.h",
    "bytes": 5979,
-   "md5": "7230c6c59e3db91396fea5320c29fd31"
+   "md5": "7230c6c59e3db91396fea5320c29fd31",
+   "sha256": "ce310152bc80d7415dcb657e23abd9a40bf83e393c0d05d325dae384bb01d259"
   },
   {
    "path": "recompiler/host/bridge_globals.c",
    "bytes": 764,
-   "md5": "38c8d3f8557e902e9364c9feef2a505c"
+   "md5": "38c8d3f8557e902e9364c9feef2a505c",
+   "sha256": "34ab78b9b44c57669d47b0c3766c14843eebc155c7028fdc707030777dcaa786"
   },
   {
    "path": "recompiler/host/bridge_globals.h",
    "bytes": 1372,
-   "md5": "d596662aaf2722f259d7ee7b301c2b05"
+   "md5": "d596662aaf2722f259d7ee7b301c2b05",
+   "sha256": "9cae9f764e40e5271367ef3792d0cbb70fd4d9abc2e05d727c04aed258382a53"
   },
   {
    "path": "recompiler/host/graphics_host.js",
    "bytes": 271385,
-   "md5": "cbdfa6210c459f8059110c3f88ae5b47"
+   "md5": "cbdfa6210c459f8059110c3f88ae5b47",
+   "sha256": "031e8b1f7897657b271236d37461200fb2c2b1b7a060e1220baf511a99dc9605"
   },
   {
    "path": "recompiler/host/graphics_host.wasm",
    "bytes": 1630820,
-   "md5": "245e0191f1b0782899963b83a8c9ca2b"
+   "md5": "245e0191f1b0782899963b83a8c9ca2b",
+   "sha256": "ca760506ce414c6cccfebf4402591bec6b95dc3394681457bf65404636a9d642"
   },
   {
    "path": "recompiler/host/graphics_host_avm2.js",
    "bytes": 359171,
-   "md5": "5d0424655762d71aaf290ec3cd933e1b"
+   "md5": "5d0424655762d71aaf290ec3cd933e1b",
+   "sha256": "f7ffcbdb228898fc6f6ac7dd4ad97cd56cc0f7b3a0433d09b59376c27d3a10dd"
   },
   {
    "path": "recompiler/host/graphics_host_avm2.wasm",
    "bytes": 3234778,
-   "md5": "38a2b416b65b5fd4ce09bbede199b6a3"
+   "md5": "38a2b416b65b5fd4ce09bbede199b6a3",
+   "sha256": "43c5ae54a4895c671cb5acfd91c0ee93a3de90102ced3657706a339b70f84d83"
   },
   {
    "path": "recompiler/host/guest_main_graphics.c",
    "bytes": 7301,
-   "md5": "609638a73f24fa299dcb7b0d654ea30c"
+   "md5": "609638a73f24fa299dcb7b0d654ea30c",
+   "sha256": "9f1d741e3b1f632d941b49e30bfb44a77b46ca1fe6e8aad05001e3ce99042cdb"
   },
   {
    "path": "recompiler/host/guest_setjmp_shim.h",
    "bytes": 1581,
-   "md5": "e3c8432e1c6c8e2f80238255360ae9e2"
+   "md5": "e3c8432e1c6c8e2f80238255360ae9e2",
+   "sha256": "a2eeeb951025cd23b4c1015c5a3d1ec2892d3221b2d8f79fb75ff7595853525c"
+  },
+  {
+   "path": "recompiler/vendor/README.md",
+   "bytes": 1546,
+   "md5": "4e11d83ad5b5cd9112da7616cb7fa961",
+   "sha256": "abf498a35c8d60e3db7dd5f538168bf0cc2fe0ee72b031c84a3e37f62f6fae8c"
+  },
+  {
+   "path": "recompiler/vendor/fflate/LICENSE",
+   "bytes": 1069,
+   "md5": "430d99d7ae8285bc905cbd8e285f3fc2",
+   "sha256": "805f6cb28bb8b6d3a0badd83c93bccd9671fa01a3b4b92b7042b0743325ac243"
+  },
+  {
+   "path": "recompiler/vendor/fflate/browser.js",
+   "bytes": 89198,
+   "md5": "fd1b12d7f45f7e026fe6337e139be374",
+   "sha256": "8cc1f687e0159e977addb6b85e274dbd11e622cf151f4fcb7b85d49622ea43e7"
+  },
+  {
+   "path": "recompiler/vendor/wasmer-sdk/LICENSE",
+   "bytes": 1097,
+   "md5": "71afdf3349f1efb1361cfd1e9e85bb8d",
+   "sha256": "76dc7d305458d07478bc62669fe53dbfd3b94b95c5e00fbb45af1f492cbd7284"
+  },
+  {
+   "path": "recompiler/vendor/wasmer-sdk/index.mjs",
+   "bytes": 49993,
+   "md5": "2f5a4e849fcad255b2ad39bfecab5cd5",
+   "sha256": "37d82f06bed6f0b7ec177cb1e383c33523eebca9e148e9f9fe1eec7221f175cb"
+  },
+  {
+   "path": "recompiler/vendor/wasmer-sdk/wasmer_js_bg.wasm",
+   "bytes": 5698342,
+   "md5": "022b3cb9199476665982fcbedb72d753",
+   "sha256": "e6a68badcff806ed82bcd8de033058fda6835583c51a115c2d9213839791d61b"
   }
  ],
- "totalBytes": 18461781
+ "totalBytes": 24338493
 }

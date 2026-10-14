@@ -8,7 +8,7 @@
 // The in-browser C -> WASM step (graphics host + in-browser clang) is a later
 // stage; see SWFRecompDocs/plans/in-browser-recompiler-refresh-assessment.md.
 
-const FFLATE_URL = "https://unpkg.com/fflate@0.8.2/esm/browser.js";
+const FFLATE_URL = new URL("./vendor/fflate/browser.js", import.meta.url).href;   // fflate 0.8.2, MIT (vendor/README.md)
 const GENERATED_DIRS = ["RecompiledTags", "RecompiledScripts", "RecompiledABC"];
 
 // --- UI helpers ---
@@ -270,7 +270,7 @@ function renderResult(result) {
     $("result").classList.add("visible");
 }
 
-async function processSwf(swfBytes, name, sourceLabel) {
+async function processSwf(swfBytes, name, sourceLabel, { rethrow = false } = {}) {
     clearError();
     currentResult = null;
     $("result").classList.remove("visible");
@@ -291,13 +291,15 @@ async function processSwf(swfBytes, name, sourceLabel) {
         const isAvm2 = Object.keys(files).some(p => p.startsWith("RecompiledABC/"));
         setStep("step-recompile", "done",
             `Recompiled ${sourceLabel} to ${Object.keys(files).length} C files in ${ms} ms (${isAvm2 ? "AVM2 / AS3" : "AVM1"})`);
-        currentResult = { files, log, configToml, swfBytes, name, sourceLabel };
+        currentResult = { files, log, configToml, swfBytes, name, sourceLabel, ms, avm2: isAvm2 };
         renderResult(currentResult);
+        return currentResult;
     } catch (e) {
         console.error(e);
         const active = ["step-load", "step-recompile"].find(id => $(id).classList.contains("active"));
         if (active) setStep(active, "error");
         showError(e.message);
+        if (rethrow) throw e;
     }
 }
 
@@ -374,38 +376,83 @@ $("dlRunnableBtn").addEventListener("click", async () => {
     }
 });
 
-$("runBtn").addEventListener("click", async () => {
-    if (!currentResult) return;
+// The run log: every line the graphics host prints (the movie's trace()
+// output among them). The walk API reads and streams it (walk_api.js).
+const runLog = [];
+const runLogListeners = new Set();
+const hostLog = (t) => {
+    runLog.push(t);
+    console.log("[host] " + t);
+    for (const f of runLogListeners) f(t, runLog.length - 1);
+};
+
+function failRunStep(e) {
+    console.error(e);
+    const active = ["step-host", "step-guest", "step-run"].find(id => $(id).classList.contains("active"));
+    if (active) setStep(active, "error");
+    showError((e.stack && e.stack.includes(e.message) ? e.stack : e.message) + (runLog.length ? "\n\nHost log:\n" + runLog.slice(-20).join("\n") : ""));
+    $("runBtn").disabled = false;
+}
+
+// Stage 2a: in-browser clang. Returns the guest; lastGuest keeps it.
+async function compileCurrent({ onStatus = () => {} } = {}) {
+    if (!currentResult) throw new Error("Nothing recompiled yet: load and recompile a SWF first.");
     const gfx = await import("./pipeline_graphics.js");
-    if (gfx.hostAlreadyUsed()) { showError("Reload the page to run another SWF in the browser."); return; }
-    const btn = $("runBtn");
-    btn.disabled = true;
+    if (gfx.hostAlreadyUsed()) throw new Error("Reload the page to run another SWF in the browser.");
     clearError();
     $("runStatus").style.display = "block";
     for (const id of ["step-host", "step-guest", "step-run"]) setStep(id, "");
+    setStep("step-guest", "active", "Compiling generated C in the browser ...");
+    const t0 = performance.now();
+    const guest = await gfx.compileGuest(currentResult, (t) => { setStep("step-guest", "active", t + " ..."); onStatus(t); });
+    const totalMs = Math.round(performance.now() - t0);
+    setStep("step-guest", "done", `Compiled ${guest.fileCount} C files to a ${fmtSize(guest.bytes.length)} guest module in ${(guest.ms / 1000).toFixed(1)} s`);
+    lastGuest = { bytes: guest.bytes, name: currentResult.name, avm2: !!guest.avm2, ms: guest.ms, totalMs, fileCount: guest.fileCount };
+    $("dlWasmBtn").style.display = "";
+    $("dlRunnableBtn").style.display = "";
+    $("runHint").textContent = `The guest .wasm holds this SWF's compiled code and data; it runs only alongside the graphics host (host/${guest.avm2 ? "graphics_host_avm2" : "graphics_host"}.wasm), the way this page loads it.`;
+    return lastGuest;
+}
+
+// Stage 2b: load the host and start the movie. Resolves once the movie is
+// RUNNING (the frame loop has started), with `done`, a promise that settles
+// when the movie quits or traps; most movies never quit.
+async function runCompiled({ onStatus = () => {} } = {}) {
+    if (!lastGuest) throw new Error("Nothing compiled yet: compile first.");
+    const gfx = await import("./pipeline_graphics.js");
+    if (gfx.hostAlreadyUsed()) throw new Error("The graphics host runs one SWF per page load: reload the page to run another.");
     const canvas = $("canvas");
-    const runLog = [];
-    const log = (t) => { runLog.push(t); console.log("[host] " + t); };
+    const t0 = performance.now();
+    setStep("step-host", "active", `Loading ${lastGuest.avm2 ? "AVM2 " : ""}graphics host ...`);
+    await gfx.loadHost({ hostDir: "host/", canvas, log: hostLog, avm2: lastGuest.avm2 });
+    setStep("step-host", "done", `${lastGuest.avm2 ? "AVM2 " : ""}Graphics host loaded`);
+    setStep("step-run", "active", "Instantiating guest ...");
+    let running, isRunning = false;
+    const started = new Promise((res) => { running = (t) => { isRunning = true; res(t); }; });
+    const done = gfx.runGuest({
+        guestBytes: lastGuest.bytes, hostDir: "host/", canvas, log: hostLog,
+        setStatus: (t) => {
+            setStep("step-run", "active", t);
+            onStatus(t);
+            if (t.startsWith("Running ")) running(t);
+        },
+    }).then(() => { setStep("step-run", "done", "Finished"); });
+    // A failure before the movie runs rejects this call; one after it (a trap
+    // mid-frame) only has `done` to land on.
+    done.catch((e) => { if (isRunning) failRunStep(e); });
+    const status = await Promise.race([started, done.then(() => "Finished")]);
+    return { status, ms: Math.round(performance.now() - t0), width: canvas.width, height: canvas.height, done };
+}
+
+$("runBtn").addEventListener("click", async () => {
+    if (!currentResult) return;
+    const btn = $("runBtn");
+    btn.disabled = true;
     try {
-        setStep("step-guest", "active", "Compiling generated C in the browser ...");
-        const guest = await gfx.compileGuest(currentResult, (t) => setStep("step-guest", "active", t + " ..."));
-        setStep("step-guest", "done", `Compiled ${guest.fileCount} C files to a ${fmtSize(guest.bytes.length)} guest module in ${(guest.ms / 1000).toFixed(1)} s`);
-        lastGuest = { bytes: guest.bytes, name: currentResult.name, avm2: !!guest.avm2 };
-        $("dlWasmBtn").style.display = "";
-        $("dlRunnableBtn").style.display = "";
-        $("runHint").textContent = `The guest .wasm holds this SWF's compiled code and data; it runs only alongside the graphics host (host/${guest.avm2 ? "graphics_host_avm2" : "graphics_host"}.wasm), the way this page loads it.`;
-        setStep("step-host", "active", `Loading ${guest.avm2 ? "AVM2 " : ""}graphics host ...`);
-        await gfx.loadHost({ hostDir: "host/", canvas, log, avm2: !!guest.avm2 });
-        setStep("step-host", "done", `${guest.avm2 ? "AVM2 " : ""}Graphics host loaded`);
-        setStep("step-run", "active", "Instantiating guest ...");
-        await gfx.runGuest({ guestBytes: guest.bytes, hostDir: "host/", canvas, log, setStatus: (t) => setStep("step-run", "active", t) });
-        setStep("step-run", "done", "Finished");
+        await compileCurrent();
+        await runCompiled();
     } catch (e) {
-        console.error(e);
-        const active = ["step-host", "step-guest", "step-run"].find(id => $(id).classList.contains("active"));
-        if (active) setStep(active, "error");
-        showError((e.stack && e.stack.includes(e.message) ? e.stack : e.message) + (runLog.length ? "\n\nHost log:\n" + runLog.slice(-20).join("\n") : ""));
-        btn.disabled = false;
+        failRunStep(e);
     }
 });
 
@@ -455,7 +502,7 @@ function handleFile(file) {
 let demoList = [];     // [{name, kind, url}]
 let selectedDemo = null;
 
-fetch("../catalog.json").then(r => r.json()).then(data => {
+const catalogReady = fetch("../catalog.json").then(r => r.json()).then(data => {
     demoList = (data.tests || []).map(t => ({
         name: t.name,
         kind: t.type,
@@ -561,3 +608,38 @@ $("demoBtn").addEventListener("click", () => {
     }
     runSelectedDemo();
 });
+
+// --- Framed without isolation: offer a new tab ---
+// Inside an iframe, isolation needs Document-Isolation-Policy (sent by
+// coi-serviceworker.js), which not every browser honours. Without it the page
+// still recompiles to C, but the in-browser compile cannot run here.
+if (window.top !== window && !globalThis.crossOriginIsolated) {
+    const hint = $("runHint");
+    hint.textContent = "This frame is not cross-origin isolated, so the in-browser compile cannot run here. ";
+    const a = document.createElement("a");
+    a.href = location.href;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Open the page in a new tab";
+    a.style.color = "#4ecca3";
+    hint.appendChild(a);
+}
+
+// --- Walk API (walk_api.js): the same stages, driven by messages ---
+import("./walk_api.js").then(({ installWalkApi }) => installWalkApi({
+    buildInfo: () => buildInfo,
+    examples: async () => { await catalogReady; return demoList.map(d => ({ name: d.name, kind: d.kind })); },
+    exampleUrl: async (name) => {
+        await catalogReady;
+        const d = demoList.find(x => x.name === name) || demoList.find(x => `${x.kind}/${x.name}` === name);
+        return d ? { url: d.url, label: `${d.kind}/${d.name}/test.swf`, name: d.name } : null;
+    },
+    showSource: (label) => { dropZone.querySelector("p").textContent = label; },
+    recompile: (bytes, name, label) => processSwf(bytes, safeName(name), label, { rethrow: true }),
+    compile: compileCurrent,
+    run: runCompiled,
+    runLog,
+    onRunLog: (f) => { runLogListeners.add(f); return () => runLogListeners.delete(f); },
+    canvas: () => $("canvas"),
+    hostAlreadyUsed: async () => (await import("./pipeline_graphics.js")).hostAlreadyUsed(),
+})).catch((e) => console.error("walk API failed to install", e));

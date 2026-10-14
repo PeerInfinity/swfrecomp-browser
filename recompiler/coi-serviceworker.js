@@ -52,6 +52,12 @@ if (typeof window === "undefined") {
             newHeaders.set("Cross-Origin-Resource-Policy", "cross-origin");
           }
           newHeaders.set("Cross-Origin-Opener-Policy", "same-origin");
+          // SWFRecomp-CC addition: Document-Isolation-Policy isolates THIS
+          // document even inside a non-isolated embedder (an iframe in an app
+          // that sends no COOP/COEP), where COOP/COEP alone cannot. Browsers
+          // without DIP ignore it; the page then reports crossOriginIsolated
+          // false in a frame and offers "open in a new tab" instead.
+          newHeaders.set("Document-Isolation-Policy", "isolate-and-credentialless");
 
           return new Response(response.body, {
             status: response.status,
