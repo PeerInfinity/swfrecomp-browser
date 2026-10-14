@@ -1,0 +1,7 @@
+bg=ffffff
+solid=ff0000
+triangles=ffff
+grad_start=ff0000
+grad_end=ff00
+stroke=ff
+grad_mid=7c8300

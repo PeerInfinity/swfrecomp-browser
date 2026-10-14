@@ -1,0 +1,22 @@
+#pragma once
+
+#include <common.h>
+
+typedef enum
+{
+	ACTION_STACK_VALUE_STRING = 0,
+	ACTION_STACK_VALUE_F32 = 1,
+	ACTION_STACK_VALUE_NULL = 2,
+	ACTION_STACK_VALUE_UNDEFINED = 3,
+	ACTION_STACK_VALUE_REGISTER = 4,
+	ACTION_STACK_VALUE_BOOLEAN = 5,
+	ACTION_STACK_VALUE_F64 = 6,
+	ACTION_STACK_VALUE_I32 = 7,
+	ACTION_STACK_VALUE_STR_LIST = 10,
+	ACTION_STACK_VALUE_OBJECT = 11,
+	ACTION_STACK_VALUE_ARRAY = 12,
+	ACTION_STACK_VALUE_FUNCTION = 13,
+	ACTION_STACK_VALUE_MOVIECLIP = 14,
+	ACTION_STACK_VALUE_HOLE = 15,     // Unset array slot (not enumerable, reads as undefined)
+	ACTION_STACK_VALUE_SUPER = 16     // Super proxy: numeric_value = this ptr, str_size = depth
+} ActionStackValueType;

@@ -1,0 +1,5 @@
+{
+  "tests": [
+    { "name": "avm2_graphics_runtime", "type": "graphics" }
+  ]
+}

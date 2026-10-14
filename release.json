@@ -1,0 +1,1025 @@
+{
+ "$comment": "The release manifest. This repository carries ONE release: the in-browser recompiler page of PeerInfinity/SWFRecomp-CC, built from the single commit in `source`. Every file in the tree is listed with its md5; nothing here is hand-edited except README.md, LICENSE, licenses/, catalog.json and examples/ (see README). `runtime` names what the page fetches from the network at run time — those bytes are NOT in this repository.",
+ "source": {
+  "repo": "PeerInfinity/SWFRecomp-CC",
+  "commit": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
+  "trees": {
+   "SWFRecomp": "de89e9429186ea944f6423b5d76bbf89c058a2cc",
+   "SWFModernRuntime": "f0797b71387fe97783d4096a4422113a6303390f",
+   "docs/recompiler": "cdaf40685f8b6c42a6a9449d4363c02757a754c0"
+  },
+  "recipe": "git archive <commit> SWFRecomp SWFModernRuntime docs/recompiler | tar -x; bash SWFRecomp/scripts/deploy_wasm_demo.sh --build (emsdk 5.0.0); copy docs/recompiler/ to recompiler/; build_info.json `commit` set to the short SHA (the archive has no .git)",
+  "licence": {
+   "commit": "7819368b16aacddc4895aa8dcfa2018439f309ef",
+   "files": [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "SWFRecomp/assets/NotoSans-OFL.txt"
+   ],
+   "note": "LICENSE here = SWFRecomp-CC's root LICENSE at this commit, which changes only licence files after `commit`"
+  },
+  "toolchain": {
+   "emsdk": "5.0.0"
+  },
+  "builtAt": "2026-10-14T18:42:26Z"
+ },
+ "page": "recompiler/index.html",
+ "runtime": {
+  "requires": "Chrome/Chromium 137+ (WebAssembly JSPI), WebGPU, SharedArrayBuffer (cross-origin isolation via recompiler/coi-serviceworker.js)",
+  "fetches": [
+   {
+    "what": "@wasmer/sdk",
+    "version": "0.8.0-beta.1",
+    "license": "MIT",
+    "url": "https://unpkg.com/@wasmer/sdk@0.8.0-beta.1/dist/index.mjs (+ wasmer_js_bg.wasm, 5,698,342 B)",
+    "pinned": true
+   },
+   {
+    "what": "clang/clang (wasmer registry)",
+    "version": "0.160000.1 (the only version published)",
+    "resolvedBy": "https://registry.wasmer.io/graphql — `fromRegistry(\"clang/clang\")`, NO version in the request",
+    "webc": "https://cdn.wasmer.io/webcimages/c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405.webc",
+    "webcSha256": "c127b7bfc0041d02c94045f40be7fb4b3eeb98cede25fad96261b7b90a82f405",
+    "bytes": 110713421,
+    "license": "not declared in the registry (contents: LLVM/clang 16 + lld, Apache-2.0 WITH LLVM-exception; a WASIX libc sysroot)",
+    "pinned": false
+   },
+   {
+    "what": "fflate",
+    "version": "0.8.2",
+    "license": "MIT",
+    "url": "https://unpkg.com/fflate@0.8.2/esm/browser.js",
+    "usedFor": "the zip downloads only",
+    "pinned": true
+   }
+  ]
+ },
+ "files": [
+  {
+   "path": ".nojekyll",
+   "bytes": 0,
+   "md5": "d41d8cd98f00b204e9800998ecf8427e"
+  },
+  {
+   "path": "LICENSE",
+   "bytes": 1114,
+   "md5": "0ec0fd2f5ffb6cd388e4ba081feab23a"
+  },
+  {
+   "path": "README.md",
+   "bytes": 6378,
+   "md5": "7d1e639af5e46f360682169b6e14cf2e"
+  },
+  {
+   "path": "catalog.json",
+   "bytes": 81,
+   "md5": "21332e8d4179c0025e23ecbdd8a13f0f"
+  },
+  {
+   "path": "examples/graphics/avm2_graphics_runtime/Test.as",
+   "bytes": 2331,
+   "md5": "8beca411bb8167f49883eff4c5567a4a"
+  },
+  {
+   "path": "examples/graphics/avm2_graphics_runtime/build_swf.sh",
+   "bytes": 366,
+   "md5": "f1a9015ce260a148cf3d240db952e291"
+  },
+  {
+   "path": "examples/graphics/avm2_graphics_runtime/output.txt",
+   "bytes": 96,
+   "md5": "70d9bd8174b028b6ee29862624bd5156"
+  },
+  {
+   "path": "examples/graphics/avm2_graphics_runtime/test.swf",
+   "bytes": 1181,
+   "md5": "49ca77b0cf96828b3a654022a0b615fe"
+  },
+  {
+   "path": "licenses/NotoSans-OFL-1.1.txt",
+   "bytes": 4235,
+   "md5": "a2faefa4517bd4e75a157c8a3be232ce"
+  },
+  {
+   "path": "licenses/c-hashmap-BSD-3.txt",
+   "bytes": 1515,
+   "md5": "0a61dff75f1e9ad9f78d3c2a36c3f34d"
+  },
+  {
+   "path": "licenses/coi-serviceworker-MIT.txt",
+   "bytes": 163,
+   "md5": "36d84f79d4056c2ba513b9a04182f10b"
+  },
+  {
+   "path": "licenses/earcut-ISC.txt",
+   "bytes": 738,
+   "md5": "0652c9aa0d7435db4efcc11962e59e51"
+  },
+  {
+   "path": "licenses/emscripten-MIT-NCSA.txt",
+   "bytes": 5093,
+   "md5": "7786e9add92fd8a28ff21b418fb590e1"
+  },
+  {
+   "path": "licenses/libtess2-SGI-B-2.0.txt",
+   "bytes": 1577,
+   "md5": "0788a91aa827d68f447dc011ed64727e"
+  },
+  {
+   "path": "licenses/o1heap-MIT.txt",
+   "bytes": 1399,
+   "md5": "cb8b936ec0279518a92c95ce0cb7a761"
+  },
+  {
+   "path": "licenses/quickjs-libregexp-MIT.txt",
+   "bytes": 1196,
+   "md5": "81ef769db556f32343edf4d9104d082c"
+  },
+  {
+   "path": "licenses/stb-MIT-or-PD.txt",
+   "bytes": 2510,
+   "md5": "fb994481c55623ef338885280e676f3b"
+  },
+  {
+   "path": "licenses/tomlplusplus-MIT.txt",
+   "bytes": 1094,
+   "md5": "90960f22c10049c117d56ed2ee5ee167"
+  },
+  {
+   "path": "licenses/zlib.txt",
+   "bytes": 1002,
+   "md5": "7a3f0162f314572de39002f96e65a850"
+  },
+  {
+   "path": "recompiler/SWFRecomp.js",
+   "bytes": 78302,
+   "md5": "2a21fee453b7f421c9b1a4cc403adc6d"
+  },
+  {
+   "path": "recompiler/SWFRecomp.wasm",
+   "bytes": 2335146,
+   "md5": "248344391b11ac9cdd10bb668efcafd0"
+  },
+  {
+   "path": "recompiler/build_info.json",
+   "bytes": 102,
+   "md5": "8c2719e5bf8bf251c03db536a5861187"
+  },
+  {
+   "path": "recompiler/coi-serviceworker.js",
+   "bytes": 5527,
+   "md5": "b46218d4b459ce3cc04f74df477ee990"
+  },
+  {
+   "path": "recompiler/guest_loader.js",
+   "bytes": 12506,
+   "md5": "b6cbdb228845287c62d42414f1d06e09"
+  },
+  {
+   "path": "recompiler/index.html",
+   "bytes": 8429,
+   "md5": "8e93c703d5f419409c95a2ad00caee08"
+  },
+  {
+   "path": "recompiler/pipeline.js",
+   "bytes": 23039,
+   "md5": "52e59a9c2f37d3c3de556e1210effb8e"
+  },
+  {
+   "path": "recompiler/pipeline_graphics.js",
+   "bytes": 7085,
+   "md5": "c8aaa532cce69367be2374a1cae97282"
+  },
+  {
+   "path": "recompiler/runner_template.html",
+   "bytes": 3047,
+   "md5": "aa5e9e035175c982774451f39aa94e01"
+  },
+  {
+   "path": "recompiler/bundle/README.md",
+   "bytes": 1344,
+   "md5": "097ce3faf803dca639b3f8fe18afd490"
+  },
+  {
+   "path": "recompiler/bundle/build.sh",
+   "bytes": 7677,
+   "md5": "9d6fdb4b47dc39856935f512c0de7eed"
+  },
+  {
+   "path": "recompiler/bundle/manifest.json",
+   "bytes": 10006,
+   "md5": "3796f4e216d2b2db8854e89056cf6199"
+  },
+  {
+   "path": "recompiler/bundle/runtime/display_bridge.c",
+   "bytes": 13273,
+   "md5": "1d77673727a25059a6e79de64733b968"
+  },
+  {
+   "path": "recompiler/bundle/runtime/index_template_graphics.html",
+   "bytes": 8083,
+   "md5": "cf99c87516a8ff5d865abaf24b8d6498"
+  },
+  {
+   "path": "recompiler/bundle/runtime/main.c",
+   "bytes": 9428,
+   "md5": "04a77fbdd75a5d8fd792f04fa719803b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/swf_bridge.js",
+   "bytes": 4853,
+   "md5": "c3830fffbc92188196db4c2bb875f3af"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/amf_packet.h",
+   "bytes": 4099,
+   "md5": "fc5422d36e9b6d083e506614ef8bfffb"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/common.h",
+   "bytes": 420,
+   "md5": "6e5aed0c86a0c96e92cce186c0e12dc7"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/curve_flatten.h",
+   "bytes": 4174,
+   "md5": "13282798aeaba6cf6b322fcd6e9058f2"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/dialog_events.h",
+   "bytes": 2888,
+   "md5": "1936e85ca6d656bf4a852e0bfbbd4b3e"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/gradient_ramp.h",
+   "bytes": 6457,
+   "md5": "0fc39ce52700d15d65b745b0fa99925a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/socket_events.h",
+   "bytes": 3943,
+   "md5": "8bb72b664ff9b8df7493ea0185dcf193"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/utils.h",
+   "bytes": 5292,
+   "md5": "a6a60e6894fed4442255c219535a8b0d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/action.h",
+   "bytes": 53518,
+   "md5": "23ff8569fc689a2dc5bf64f27c706ff6"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/action_internal.h",
+   "bytes": 19710,
+   "md5": "15f309c6df1c1d373f69b076f282932c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/action_queue.h",
+   "bytes": 15268,
+   "md5": "d677e99e03174bb84cf64d2c65def647"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/actiondate.h",
+   "bytes": 1820,
+   "md5": "f5e8c9991412019962b16317d55277e7"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/actionmath.h",
+   "bytes": 1835,
+   "md5": "f621c3092a0c390d738066c2a91a7f8d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/actionrando.h",
+   "bytes": 1359,
+   "md5": "72c2b9755666a555d0f384868ac863bd"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/actionregclass.h",
+   "bytes": 3380,
+   "md5": "25a316c126a56592438287089d01842b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/actiontimer.h",
+   "bytes": 2214,
+   "md5": "c4f73b46d8284c6dd59354b2fc5f0dae"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/avm1_amf.h",
+   "bytes": 4855,
+   "md5": "103a1e2c567f6b9931d5fb062d7704cd"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/object.h",
+   "bytes": 17314,
+   "md5": "803493444832029cb6d2314c212174e1"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/rando_ap.h",
+   "bytes": 2326,
+   "md5": "986e0ebea30de917158f0a3aca414f47"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/sprite_frame_scripts.h",
+   "bytes": 3888,
+   "md5": "df52e0389866e4ad49b333ccdc4dffb0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/stackvalue.h",
+   "bytes": 681,
+   "md5": "2b955e9e10934b61c314ec9f349cadea"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/variables.h",
+   "bytes": 861,
+   "md5": "5a717a5bc3f7bf35344e100fcb1eac01"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/actionmodern/video_codec.h",
+   "bytes": 3950,
+   "md5": "c5e10e89633b5be83783bc9f1ba11e19"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/audio/audio.h",
+   "bytes": 5548,
+   "md5": "f494bac0c9e71003a0ab06f3ab4ee402"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/audio/minimp3.h",
+   "bytes": 76802,
+   "md5": "8b08e5fee655453f27676ab806319cc0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_abc.h",
+   "bytes": 32811,
+   "md5": "39fc81343f9b71533f54caadad81594c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_class.h",
+   "bytes": 18419,
+   "md5": "e84e4217c905f0533e720529efd98bf8"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_cpu_raster.h",
+   "bytes": 5112,
+   "md5": "524ce9334952e1a6b6f12067373c3b8d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_e4x.h",
+   "bytes": 13327,
+   "md5": "07737c9c4f9a8ea37b515b096cb63deb"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_error.h",
+   "bytes": 8705,
+   "md5": "e3aa1ca1f8a08c240b8d5c2bb08e453b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_filters.h",
+   "bytes": 6068,
+   "md5": "d1813df2bd4b2bd692a1abba3c99744c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_flixel.h",
+   "bytes": 4437,
+   "md5": "319c362cb62dab3871958ad2aa220dfc"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_gc.h",
+   "bytes": 8032,
+   "md5": "9b1fe5f65f2bca317f74703f81a8c8c1"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_globals.h",
+   "bytes": 62053,
+   "md5": "0214e3571b96e53cdf6789d77ffa7092"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_main.h",
+   "bytes": 4458,
+   "md5": "17ebeb92bfc68d00f83b8fb0242da540"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_object.h",
+   "bytes": 10346,
+   "md5": "3daa5f71675f956b658122e2800bf661"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_ops.h",
+   "bytes": 44417,
+   "md5": "2d68b0ffd7f90fe345a1a95e9853ab0c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_value.h",
+   "bytes": 5749,
+   "md5": "bd8cc2d1cbe547ddee88400239ab37d9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/flashbang/flashbang.h",
+   "bytes": 2707,
+   "md5": "9c65414b054540d72b02b9b8253cee0f"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/capture.h",
+   "bytes": 1235,
+   "md5": "ec741ed66a3834c502fe45f3c334fab5"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/generated_data.h",
+   "bytes": 3077,
+   "md5": "74672102297df7c99d98b8381ea493d2"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/hit_test.h",
+   "bytes": 1018,
+   "md5": "a0e735daa5ca425fe21932c28bd692d9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/recomp.h",
+   "bytes": 802,
+   "md5": "9a2ce1621df7ec36193f2fdbadec85fc"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/swf.h",
+   "bytes": 31544,
+   "md5": "0ed6650c153eaf22215e88fda7123681"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/libswf/tag.h",
+   "bytes": 42373,
+   "md5": "1e0f70f6e603023c7c816dd3b33b2777"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/memory/heap.h",
+   "bytes": 6412,
+   "md5": "d53e96fadcf25940577f7a4572ab1673"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/rendering/render_webgpu.h",
+   "bytes": 30969,
+   "md5": "408e515c23df6213d1a0762cfd041e92"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/rendering/renderer.h",
+   "bytes": 9655,
+   "md5": "210bef5e5a0ed963f33ef04e513545fa"
+  },
+  {
+   "path": "recompiler/bundle/runtime/lib/c-hashmap/map.c",
+   "bytes": 9365,
+   "md5": "98453853ae23ee9f8be5d9505ff01053"
+  },
+  {
+   "path": "recompiler/bundle/runtime/lib/c-hashmap/map.h",
+   "bytes": 3077,
+   "md5": "70d3c5c7ee90559f8031b856978c7d2b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/lib/o1heap/o1heap.c",
+   "bytes": 24730,
+   "md5": "1178d691de5f5a8ea15c2527e5591251"
+  },
+  {
+   "path": "recompiler/bundle/runtime/lib/o1heap/o1heap.h",
+   "bytes": 8526,
+   "md5": "5a19b1476c9849f6a9d9c63370fde29d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/lib/stb/stb_image.h",
+   "bytes": 283010,
+   "md5": "27932e6fb3a2f26aee2fc33f2cb4e696"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/amf_packet.c",
+   "bytes": 4626,
+   "md5": "90aa01212d9a57c9b22a1374b4a2a010"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/utils.c",
+   "bytes": 109611,
+   "md5": "6d33db80196a7f60561a429e540d017f"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/action.c",
+   "bytes": 3342018,
+   "md5": "b77861b2036cbb60c5fabea936def74a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/action_queue.c",
+   "bytes": 29539,
+   "md5": "af8f52609355c4bb60aadc8b424f27fa"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/avm1_amf.c",
+   "bytes": 55663,
+   "md5": "058f3de2f09a76ca77666dbf1f38e7de"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/date.c",
+   "bytes": 45286,
+   "md5": "aa90502bb8a3de072cb810a60b80ca83"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/image_decode.c",
+   "bytes": 2137,
+   "md5": "38def7a5ffd94e42ef61ce53b0887a74"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/math.c",
+   "bytes": 18431,
+   "md5": "2f6031e6446f40ea98d5c01715804d7a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/object.c",
+   "bytes": 74227,
+   "md5": "f8fdb1453a7a114aec0e15a9c5cb5d38"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/registered_class.c",
+   "bytes": 17843,
+   "md5": "18b06d9505bbfdd8149994d94c8d7880"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/sprite_frame_scripts.c",
+   "bytes": 3203,
+   "md5": "186d546c30b2eed64d3bec072fe43057"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/timer.c",
+   "bytes": 20682,
+   "md5": "5fee3a243d8bba51470e039a650acebe"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/unicode_case_tables.h",
+   "bytes": 45189,
+   "md5": "740fea0fc627ae14ccec8bc6ae0422a2"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/variables.c",
+   "bytes": 9715,
+   "md5": "0b53a04c42fd0da309d535a40ab6b157"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/actionmodern/video_codec.c",
+   "bytes": 25807,
+   "md5": "5ead82d8e055f9f28467b839ad6f6faa"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/audio/audio.c",
+   "bytes": 19571,
+   "md5": "37b30a4b0405b8369433ae0c778ae42c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/audio/audio_output_web.c",
+   "bytes": 3225,
+   "md5": "14bf9cf0fdf3b65334485caf69d832a5"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_amf.c",
+   "bytes": 67591,
+   "md5": "471a2f0e1d2d0730d2cd791179146eb1"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_array.c",
+   "bytes": 41902,
+   "md5": "7ea799c9034842135049e1b65216f356"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_bitmap.c",
+   "bytes": 155224,
+   "md5": "48c2e21a7b1e2f35f5e299e2ba4ac8e2"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_bytearray.c",
+   "bytes": 51731,
+   "md5": "ee31f76d6c0a50819a9f06bea934cffe"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_class.c",
+   "bytes": 78877,
+   "md5": "c304dd633ab5d5ab220a7353c1338338"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_cpu_raster.c",
+   "bytes": 22014,
+   "md5": "409cc333553a5e2142cf6cc36f01dda0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_date.c",
+   "bytes": 35928,
+   "md5": "d6adf3c9ac6875f4be595125b06a0167"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_dictionary.c",
+   "bytes": 1782,
+   "md5": "3d7503b789795c28bcd7e7dacbd0b2eb"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_display.c",
+   "bytes": 801045,
+   "md5": "1ca5242e2eafeb4c3f51941afb6d7583"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_e4x.c",
+   "bytes": 68259,
+   "md5": "0ea54e0b559bbcd6e14037dea8a5455a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_error.c",
+   "bytes": 92359,
+   "md5": "7c0441ce5713c86654572049c271ecfd"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_events.c",
+   "bytes": 100339,
+   "md5": "91145409502a4f583778b7ec222394e9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_external.c",
+   "bytes": 14323,
+   "md5": "d0a0c13c4789c4fb211c65c5f2364384"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_filters.c",
+   "bytes": 48015,
+   "md5": "c27ea03e5f97fafb77a024e030778ee0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_flixel.c",
+   "bytes": 50245,
+   "md5": "5f1307d90d3b7c2841993bd070504ca1"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_function.c",
+   "bytes": 15902,
+   "md5": "8c3f74a6d9d035aca911f457dd171c6e"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_gc.c",
+   "bytes": 46032,
+   "md5": "1ec7571846d45fccd6b1056e49648ac4"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_globals.c",
+   "bytes": 407732,
+   "md5": "664ffcccb54bc0340b0ba1f14c6a463b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_json.c",
+   "bytes": 34367,
+   "md5": "83aa939ada1f158ac18bc6965ae58e15"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_main.c",
+   "bytes": 37668,
+   "md5": "5005a4333a71284bdaecbbea4756028b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_media.c",
+   "bytes": 71024,
+   "md5": "0a6f92646998b235fcf9dbc9e7ee7f7f"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_mops.c",
+   "bytes": 9916,
+   "md5": "6f9a7a6bcace5154d57d2e206de0bafc"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_net.c",
+   "bytes": 109829,
+   "md5": "d0fb275856179d9cb687d214f8bf3a4a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_nsqname.c",
+   "bytes": 14637,
+   "md5": "56e98c988cfe30f7c8c3e8db8b514e70"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_number.c",
+   "bytes": 39850,
+   "md5": "c3c9f61240bec6fc009e1b1ef876236a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_object.c",
+   "bytes": 19226,
+   "md5": "8d739320cdedafd5b0cda98196d2d814"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_ops.c",
+   "bytes": 179479,
+   "md5": "93887ab75efe5936875b131740a38c25"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_pixelbender.c",
+   "bytes": 73316,
+   "md5": "a9246b0d963b8db81de7d2d953ebdddc"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_proxy.c",
+   "bytes": 8006,
+   "md5": "94ea0e317bd6c53df8797902b7a9459a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_regexp.c",
+   "bytes": 39798,
+   "md5": "1cfcd87dfec584e85d0a7fdf828d6ca5"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_stage3d.c",
+   "bytes": 186869,
+   "md5": "6574d2220b032cead278394ac839c1b4"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_string.c",
+   "bytes": 25829,
+   "md5": "d898db3f12891618fd05fd347a11b753"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_text.c",
+   "bytes": 382028,
+   "md5": "54a5843a136af6255debffa656974207"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_value.c",
+   "bytes": 38061,
+   "md5": "4981b4eabdc701a30b2797b7880d22cd"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_vector.c",
+   "bytes": 43712,
+   "md5": "484324aa350c8e037404d68f1fc67091"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_xml.c",
+   "bytes": 117640,
+   "md5": "98af565c8f79d0109d8bd974a689f885"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/graphics_stubs.c",
+   "bytes": 23997,
+   "md5": "23613ba42f6086f912c29770d1807f58"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/hit_test.c",
+   "bytes": 3432,
+   "md5": "d1309d2fdd7fe8a27f3e4c18140e1f3c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/ng_shared.c",
+   "bytes": 99959,
+   "md5": "72d70cfb5ef89dad19e37de32d8bcdd6"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/shape_hit_test.c",
+   "bytes": 31577,
+   "md5": "e33968a7b9137c845cf0b6c2f7edf47c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/stb_image_impl.c",
+   "bytes": 464,
+   "md5": "6e4777407976e3d5e6fcee0c78071594"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/swf.c",
+   "bytes": 85452,
+   "md5": "fd9c9f1589606c52ce8f00fd5c192465"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/tag.c",
+   "bytes": 615949,
+   "md5": "a59c1e136c9c6df14346891ac22ecef0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/libswf/tag_stubs.c",
+   "bytes": 139176,
+   "md5": "fe3583e771114d1d17192f7466b60f25"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/memory/heap.c",
+   "bytes": 18236,
+   "md5": "802d6e7ca72e6ac2a769ce3ca7dbeec0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/rendering/render_webgpu.c",
+   "bytes": 281125,
+   "md5": "e86f8e9fdd1f7c42bd4ad8803f5f587b"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/bucketalloc.c",
+   "bytes": 4982,
+   "md5": "35fc03fde10546c28fb9204b5b47c05e"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/bucketalloc.h",
+   "bytes": 2054,
+   "md5": "d650c09e4f0dab9038a800b0ab280b20"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/dict.c",
+   "bytes": 3491,
+   "md5": "ba3555ca85f7636c8981692a22bbb69f"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/dict.h",
+   "bytes": 2837,
+   "md5": "9cca8c3e4605f18200025a42fc5711ac"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/geom.c",
+   "bytes": 9741,
+   "md5": "0e30427ad439780f160a3083ca3b32c9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/geom.h",
+   "bytes": 3824,
+   "md5": "298eb735fa553702308ccb2bc0869968"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/mesh.c",
+   "bytes": 25710,
+   "md5": "606bb9e65c1acc2c93a2f7520568cc7e"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/mesh.h",
+   "bytes": 12422,
+   "md5": "1e182869e6aee6191bca97a401fbd8d0"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/priorityq.c",
+   "bytes": 13316,
+   "md5": "6276c9a8387d328f042a7014a44aebe1"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/priorityq.h",
+   "bytes": 3777,
+   "md5": "221286857479363d76e74e861825b6c5"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/sweep.c",
+   "bytes": 46877,
+   "md5": "68f3289e92ff1b1f0f25e228e4c71fbc"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/sweep.h",
+   "bytes": 3209,
+   "md5": "dce3fe564492a7b93e3b3935f6d37d19"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/tess.c",
+   "bytes": 29577,
+   "md5": "78410371e7a3abbebed5e965b9468ce9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/tess.h",
+   "bytes": 3038,
+   "md5": "7e8bd836f73ed3bffc6ff1d3fde9f04f"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/libtess2/tesselator.h",
+   "bytes": 11017,
+   "md5": "bec84197d0c102ad1075bbfec5e60554"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/7zTypes.h",
+   "bytes": 9179,
+   "md5": "eaad273f968907ccfbbb979820c2bd3c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/Compiler.h",
+   "bytes": 1253,
+   "md5": "df05df4baee7d841aa3ad1f783f83c0a"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzFind.c",
+   "bytes": 25920,
+   "md5": "1c4e8d4807e9056d2eaec89421285fdf"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzFind.h",
+   "bytes": 3570,
+   "md5": "8a7155e252ba45126bf50d2ef83bbbd7"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzHash.h",
+   "bytes": 1824,
+   "md5": "8bc7b6b0fcf039bfbd2a936ed5b01b6d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzmaDec.c",
+   "bytes": 33031,
+   "md5": "bc0f5b3b4ccdbffe90dbfd1278377002"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzmaDec.h",
+   "bytes": 7136,
+   "md5": "34d6d70022b3f0e9299f3668c88ae339"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzmaEnc.c",
+   "bytes": 75082,
+   "md5": "cb1ba261c579f47242edef355a973bf5"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/LzmaEnc.h",
+   "bytes": 3070,
+   "md5": "0e8c207c491137ee1dec992f10b50422"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/Precomp.h",
+   "bytes": 615,
+   "md5": "ff827c2f4484e514360e43cea5f00dec"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/lzma_alone.c",
+   "bytes": 5232,
+   "md5": "08672bf677ae465a2717d0755da267eb"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/lzma/lzma_alone.h",
+   "bytes": 1297,
+   "md5": "d0978b6b84e530ffb715ef71fa19fb40"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/cutils.c",
+   "bytes": 17798,
+   "md5": "e3dd4392d3765021c74fece1bd7e6fd9"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/cutils.h",
+   "bytes": 11162,
+   "md5": "17e9d2d5624f0723d434d975e5207111"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
+   "bytes": 2887,
+   "md5": "761f050100c9569341f605d694214711"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.c",
+   "bytes": 113209,
+   "md5": "80cdd505a2f5ebdbf26ac0f632f22184"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.h",
+   "bytes": 2737,
+   "md5": "8bb32ac06bc841eaf5e24761813fd95d"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode-table.h",
+   "bytes": 252492,
+   "md5": "7f7dacdbb77b5c181b5dea346a8820ad"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode.c",
+   "bytes": 63617,
+   "md5": "f87b86851b71bef127bb4c9d3ce580fd"
+  },
+  {
+   "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libunicode.h",
+   "bytes": 5979,
+   "md5": "7230c6c59e3db91396fea5320c29fd31"
+  },
+  {
+   "path": "recompiler/host/bridge_globals.c",
+   "bytes": 764,
+   "md5": "38c8d3f8557e902e9364c9feef2a505c"
+  },
+  {
+   "path": "recompiler/host/bridge_globals.h",
+   "bytes": 1372,
+   "md5": "d596662aaf2722f259d7ee7b301c2b05"
+  },
+  {
+   "path": "recompiler/host/graphics_host.js",
+   "bytes": 271385,
+   "md5": "cbdfa6210c459f8059110c3f88ae5b47"
+  },
+  {
+   "path": "recompiler/host/graphics_host.wasm",
+   "bytes": 1630820,
+   "md5": "245e0191f1b0782899963b83a8c9ca2b"
+  },
+  {
+   "path": "recompiler/host/graphics_host_avm2.js",
+   "bytes": 359171,
+   "md5": "5d0424655762d71aaf290ec3cd933e1b"
+  },
+  {
+   "path": "recompiler/host/graphics_host_avm2.wasm",
+   "bytes": 3234778,
+   "md5": "38a2b416b65b5fd4ce09bbede199b6a3"
+  },
+  {
+   "path": "recompiler/host/guest_main_graphics.c",
+   "bytes": 7301,
+   "md5": "609638a73f24fa299dcb7b0d654ea30c"
+  },
+  {
+   "path": "recompiler/host/guest_setjmp_shim.h",
+   "bytes": 1581,
+   "md5": "e3c8432e1c6c8e2f80238255360ae9e2"
+  }
+ ],
+ "totalBytes": 18461781
+}

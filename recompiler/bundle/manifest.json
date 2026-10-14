@@ -1,0 +1,626 @@
+[
+{
+"path": "README.md",
+"size": 1344
+},
+{
+"path": "build.sh",
+"size": 7677
+},
+{
+"path": "runtime/display_bridge.c",
+"size": 13273
+},
+{
+"path": "runtime/include/actionmodern/action.h",
+"size": 53518
+},
+{
+"path": "runtime/include/actionmodern/action_internal.h",
+"size": 19710
+},
+{
+"path": "runtime/include/actionmodern/action_queue.h",
+"size": 15268
+},
+{
+"path": "runtime/include/actionmodern/actiondate.h",
+"size": 1820
+},
+{
+"path": "runtime/include/actionmodern/actionmath.h",
+"size": 1835
+},
+{
+"path": "runtime/include/actionmodern/actionrando.h",
+"size": 1359
+},
+{
+"path": "runtime/include/actionmodern/actionregclass.h",
+"size": 3380
+},
+{
+"path": "runtime/include/actionmodern/actiontimer.h",
+"size": 2214
+},
+{
+"path": "runtime/include/actionmodern/avm1_amf.h",
+"size": 4855
+},
+{
+"path": "runtime/include/actionmodern/object.h",
+"size": 17314
+},
+{
+"path": "runtime/include/actionmodern/rando_ap.h",
+"size": 2326
+},
+{
+"path": "runtime/include/actionmodern/sprite_frame_scripts.h",
+"size": 3888
+},
+{
+"path": "runtime/include/actionmodern/stackvalue.h",
+"size": 681
+},
+{
+"path": "runtime/include/actionmodern/variables.h",
+"size": 861
+},
+{
+"path": "runtime/include/actionmodern/video_codec.h",
+"size": 3950
+},
+{
+"path": "runtime/include/amf_packet.h",
+"size": 4099
+},
+{
+"path": "runtime/include/audio/audio.h",
+"size": 5548
+},
+{
+"path": "runtime/include/audio/minimp3.h",
+"size": 76802
+},
+{
+"path": "runtime/include/avm2/avm2_abc.h",
+"size": 32811
+},
+{
+"path": "runtime/include/avm2/avm2_class.h",
+"size": 18419
+},
+{
+"path": "runtime/include/avm2/avm2_cpu_raster.h",
+"size": 5112
+},
+{
+"path": "runtime/include/avm2/avm2_e4x.h",
+"size": 13327
+},
+{
+"path": "runtime/include/avm2/avm2_error.h",
+"size": 8705
+},
+{
+"path": "runtime/include/avm2/avm2_filters.h",
+"size": 6068
+},
+{
+"path": "runtime/include/avm2/avm2_flixel.h",
+"size": 4437
+},
+{
+"path": "runtime/include/avm2/avm2_gc.h",
+"size": 8032
+},
+{
+"path": "runtime/include/avm2/avm2_globals.h",
+"size": 62053
+},
+{
+"path": "runtime/include/avm2/avm2_main.h",
+"size": 4458
+},
+{
+"path": "runtime/include/avm2/avm2_object.h",
+"size": 10346
+},
+{
+"path": "runtime/include/avm2/avm2_ops.h",
+"size": 44417
+},
+{
+"path": "runtime/include/avm2/avm2_value.h",
+"size": 5749
+},
+{
+"path": "runtime/include/common.h",
+"size": 420
+},
+{
+"path": "runtime/include/curve_flatten.h",
+"size": 4174
+},
+{
+"path": "runtime/include/dialog_events.h",
+"size": 2888
+},
+{
+"path": "runtime/include/flashbang/flashbang.h",
+"size": 2707
+},
+{
+"path": "runtime/include/gradient_ramp.h",
+"size": 6457
+},
+{
+"path": "runtime/include/libswf/capture.h",
+"size": 1235
+},
+{
+"path": "runtime/include/libswf/generated_data.h",
+"size": 3077
+},
+{
+"path": "runtime/include/libswf/hit_test.h",
+"size": 1018
+},
+{
+"path": "runtime/include/libswf/recomp.h",
+"size": 802
+},
+{
+"path": "runtime/include/libswf/swf.h",
+"size": 31544
+},
+{
+"path": "runtime/include/libswf/tag.h",
+"size": 42373
+},
+{
+"path": "runtime/include/memory/heap.h",
+"size": 6412
+},
+{
+"path": "runtime/include/rendering/render_webgpu.h",
+"size": 30969
+},
+{
+"path": "runtime/include/rendering/renderer.h",
+"size": 9655
+},
+{
+"path": "runtime/include/socket_events.h",
+"size": 3943
+},
+{
+"path": "runtime/include/utils.h",
+"size": 5292
+},
+{
+"path": "runtime/index_template_graphics.html",
+"size": 8083
+},
+{
+"path": "runtime/lib/c-hashmap/map.c",
+"size": 9365
+},
+{
+"path": "runtime/lib/c-hashmap/map.h",
+"size": 3077
+},
+{
+"path": "runtime/lib/o1heap/o1heap.c",
+"size": 24730
+},
+{
+"path": "runtime/lib/o1heap/o1heap.h",
+"size": 8526
+},
+{
+"path": "runtime/lib/stb/stb_image.h",
+"size": 283010
+},
+{
+"path": "runtime/main.c",
+"size": 9428
+},
+{
+"path": "runtime/src/actionmodern/action.c",
+"size": 3342018
+},
+{
+"path": "runtime/src/actionmodern/action_queue.c",
+"size": 29539
+},
+{
+"path": "runtime/src/actionmodern/avm1_amf.c",
+"size": 55663
+},
+{
+"path": "runtime/src/actionmodern/date.c",
+"size": 45286
+},
+{
+"path": "runtime/src/actionmodern/image_decode.c",
+"size": 2137
+},
+{
+"path": "runtime/src/actionmodern/math.c",
+"size": 18431
+},
+{
+"path": "runtime/src/actionmodern/object.c",
+"size": 74227
+},
+{
+"path": "runtime/src/actionmodern/registered_class.c",
+"size": 17843
+},
+{
+"path": "runtime/src/actionmodern/sprite_frame_scripts.c",
+"size": 3203
+},
+{
+"path": "runtime/src/actionmodern/timer.c",
+"size": 20682
+},
+{
+"path": "runtime/src/actionmodern/unicode_case_tables.h",
+"size": 45189
+},
+{
+"path": "runtime/src/actionmodern/variables.c",
+"size": 9715
+},
+{
+"path": "runtime/src/actionmodern/video_codec.c",
+"size": 25807
+},
+{
+"path": "runtime/src/amf_packet.c",
+"size": 4626
+},
+{
+"path": "runtime/src/audio/audio.c",
+"size": 19571
+},
+{
+"path": "runtime/src/audio/audio_output_web.c",
+"size": 3225
+},
+{
+"path": "runtime/src/avm2/avm2_amf.c",
+"size": 67591
+},
+{
+"path": "runtime/src/avm2/avm2_array.c",
+"size": 41902
+},
+{
+"path": "runtime/src/avm2/avm2_bitmap.c",
+"size": 155224
+},
+{
+"path": "runtime/src/avm2/avm2_bytearray.c",
+"size": 51731
+},
+{
+"path": "runtime/src/avm2/avm2_class.c",
+"size": 78877
+},
+{
+"path": "runtime/src/avm2/avm2_cpu_raster.c",
+"size": 22014
+},
+{
+"path": "runtime/src/avm2/avm2_date.c",
+"size": 35928
+},
+{
+"path": "runtime/src/avm2/avm2_dictionary.c",
+"size": 1782
+},
+{
+"path": "runtime/src/avm2/avm2_display.c",
+"size": 801045
+},
+{
+"path": "runtime/src/avm2/avm2_e4x.c",
+"size": 68259
+},
+{
+"path": "runtime/src/avm2/avm2_error.c",
+"size": 92359
+},
+{
+"path": "runtime/src/avm2/avm2_events.c",
+"size": 100339
+},
+{
+"path": "runtime/src/avm2/avm2_external.c",
+"size": 14323
+},
+{
+"path": "runtime/src/avm2/avm2_filters.c",
+"size": 48015
+},
+{
+"path": "runtime/src/avm2/avm2_flixel.c",
+"size": 50245
+},
+{
+"path": "runtime/src/avm2/avm2_function.c",
+"size": 15902
+},
+{
+"path": "runtime/src/avm2/avm2_gc.c",
+"size": 46032
+},
+{
+"path": "runtime/src/avm2/avm2_globals.c",
+"size": 407732
+},
+{
+"path": "runtime/src/avm2/avm2_json.c",
+"size": 34367
+},
+{
+"path": "runtime/src/avm2/avm2_main.c",
+"size": 37668
+},
+{
+"path": "runtime/src/avm2/avm2_media.c",
+"size": 71024
+},
+{
+"path": "runtime/src/avm2/avm2_mops.c",
+"size": 9916
+},
+{
+"path": "runtime/src/avm2/avm2_net.c",
+"size": 109829
+},
+{
+"path": "runtime/src/avm2/avm2_nsqname.c",
+"size": 14637
+},
+{
+"path": "runtime/src/avm2/avm2_number.c",
+"size": 39850
+},
+{
+"path": "runtime/src/avm2/avm2_object.c",
+"size": 19226
+},
+{
+"path": "runtime/src/avm2/avm2_ops.c",
+"size": 179479
+},
+{
+"path": "runtime/src/avm2/avm2_pixelbender.c",
+"size": 73316
+},
+{
+"path": "runtime/src/avm2/avm2_proxy.c",
+"size": 8006
+},
+{
+"path": "runtime/src/avm2/avm2_regexp.c",
+"size": 39798
+},
+{
+"path": "runtime/src/avm2/avm2_stage3d.c",
+"size": 186869
+},
+{
+"path": "runtime/src/avm2/avm2_string.c",
+"size": 25829
+},
+{
+"path": "runtime/src/avm2/avm2_text.c",
+"size": 382028
+},
+{
+"path": "runtime/src/avm2/avm2_value.c",
+"size": 38061
+},
+{
+"path": "runtime/src/avm2/avm2_vector.c",
+"size": 43712
+},
+{
+"path": "runtime/src/avm2/avm2_xml.c",
+"size": 117640
+},
+{
+"path": "runtime/src/libswf/graphics_stubs.c",
+"size": 23997
+},
+{
+"path": "runtime/src/libswf/hit_test.c",
+"size": 3432
+},
+{
+"path": "runtime/src/libswf/ng_shared.c",
+"size": 99959
+},
+{
+"path": "runtime/src/libswf/shape_hit_test.c",
+"size": 31577
+},
+{
+"path": "runtime/src/libswf/stb_image_impl.c",
+"size": 464
+},
+{
+"path": "runtime/src/libswf/swf.c",
+"size": 85452
+},
+{
+"path": "runtime/src/libswf/tag.c",
+"size": 615949
+},
+{
+"path": "runtime/src/libswf/tag_stubs.c",
+"size": 139176
+},
+{
+"path": "runtime/src/memory/heap.c",
+"size": 18236
+},
+{
+"path": "runtime/src/rendering/render_webgpu.c",
+"size": 281125
+},
+{
+"path": "runtime/src/utils.c",
+"size": 109611
+},
+{
+"path": "runtime/swf_bridge.js",
+"size": 4853
+},
+{
+"path": "runtime/third_party/libtess2/bucketalloc.c",
+"size": 4982
+},
+{
+"path": "runtime/third_party/libtess2/bucketalloc.h",
+"size": 2054
+},
+{
+"path": "runtime/third_party/libtess2/dict.c",
+"size": 3491
+},
+{
+"path": "runtime/third_party/libtess2/dict.h",
+"size": 2837
+},
+{
+"path": "runtime/third_party/libtess2/geom.c",
+"size": 9741
+},
+{
+"path": "runtime/third_party/libtess2/geom.h",
+"size": 3824
+},
+{
+"path": "runtime/third_party/libtess2/mesh.c",
+"size": 25710
+},
+{
+"path": "runtime/third_party/libtess2/mesh.h",
+"size": 12422
+},
+{
+"path": "runtime/third_party/libtess2/priorityq.c",
+"size": 13316
+},
+{
+"path": "runtime/third_party/libtess2/priorityq.h",
+"size": 3777
+},
+{
+"path": "runtime/third_party/libtess2/sweep.c",
+"size": 46877
+},
+{
+"path": "runtime/third_party/libtess2/sweep.h",
+"size": 3209
+},
+{
+"path": "runtime/third_party/libtess2/tess.c",
+"size": 29577
+},
+{
+"path": "runtime/third_party/libtess2/tess.h",
+"size": 3038
+},
+{
+"path": "runtime/third_party/libtess2/tesselator.h",
+"size": 11017
+},
+{
+"path": "runtime/third_party/lzma/7zTypes.h",
+"size": 9179
+},
+{
+"path": "runtime/third_party/lzma/Compiler.h",
+"size": 1253
+},
+{
+"path": "runtime/third_party/lzma/LzFind.c",
+"size": 25920
+},
+{
+"path": "runtime/third_party/lzma/LzFind.h",
+"size": 3570
+},
+{
+"path": "runtime/third_party/lzma/LzHash.h",
+"size": 1824
+},
+{
+"path": "runtime/third_party/lzma/LzmaDec.c",
+"size": 33031
+},
+{
+"path": "runtime/third_party/lzma/LzmaDec.h",
+"size": 7136
+},
+{
+"path": "runtime/third_party/lzma/LzmaEnc.c",
+"size": 75082
+},
+{
+"path": "runtime/third_party/lzma/LzmaEnc.h",
+"size": 3070
+},
+{
+"path": "runtime/third_party/lzma/Precomp.h",
+"size": 615
+},
+{
+"path": "runtime/third_party/lzma/lzma_alone.c",
+"size": 5232
+},
+{
+"path": "runtime/third_party/lzma/lzma_alone.h",
+"size": 1297
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/cutils.c",
+"size": 17798
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/cutils.h",
+"size": 11162
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
+"size": 2887
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libregexp.c",
+"size": 113209
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libregexp.h",
+"size": 2737
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libunicode-table.h",
+"size": 252492
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libunicode.c",
+"size": 63617
+},
+{
+"path": "runtime/third_party/quickjs-libregexp/libunicode.h",
+"size": 5979
+}
+]

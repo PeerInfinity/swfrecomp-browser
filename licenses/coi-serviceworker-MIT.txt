@@ -1,0 +1,2 @@
+// File taken from: https://github.com/gzuidhof/coi-serviceworker/tree/master
+/*! coi-serviceworker v0.1.7 - Guido Zuidhof and contributors, licensed under MIT */

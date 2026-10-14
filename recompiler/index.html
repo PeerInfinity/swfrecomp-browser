@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SWFRecomp - In-Browser SWF Recompiler</title>
+    <script>
+        // coi-serviceworker in credentialless mode: SharedArrayBuffer (needed by the
+        // in-browser clang and the shared-memory graphics host) while still allowing
+        // the cross-origin SDK/fflate scripts from unpkg.
+        window.coi = { coepCredentialless: () => true, coepDegrade: () => false };
+    </script>
+    <script src="coi-serviceworker.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26A1;</text></svg>">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+        h1 { color: #e94560; margin-bottom: 0.5rem; }
+        .subtitle { color: #888; margin-bottom: 0.4rem; }
+        .note { color: #e9a045; font-size: 0.85em; margin-bottom: 1.5rem; max-width: 640px; text-align: center; }
+        .panel { width: 100%; max-width: 640px; }
+        .btn {
+            background: #16213e;
+            color: #4ecca3;
+            border: 1px solid #4ecca3;
+            border-radius: 8px;
+            padding: 0.5rem 1.2rem;
+            font-size: 0.9em;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn:hover { background: rgba(78, 204, 163, 0.1); }
+        .btn:disabled { color: #666; border-color: #444; cursor: default; background: #16213e; }
+        .btn.primary { background: #e94560; color: #fff; border-color: #e94560; }
+        .btn.primary:hover { background: #ff5c75; }
+        .btn.primary:disabled { background: #5a2a36; border-color: #5a2a36; color: #aaa; }
+        .drop-zone {
+            width: 100%;
+            border: 2px dashed #555;
+            border-radius: 12px;
+            padding: 2.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-bottom: 1rem;
+        }
+        .drop-zone:hover, .drop-zone.dragover {
+            border-color: #e94560;
+            background: rgba(233, 69, 96, 0.05);
+        }
+        .drop-zone input { display: none; }
+        #demoRow { margin-bottom: 1rem; position: relative; }
+        #demoSearch {
+            flex: 1; background: #16213e; color: #e0e0e0; border: 1px solid #4ecca3;
+            border-radius: 6px; padding: 0.4rem 0.8rem; font-size: 0.9em; outline: none;
+        }
+        #demoResults {
+            display: none; position: absolute; top: 100%; left: 0; right: 0; max-height: 300px;
+            overflow-y: auto; background: #16213e; border: 1px solid #4ecca3; border-top: none;
+            border-radius: 0 0 6px 6px; z-index: 10;
+        }
+        .demo-item { padding: 0.4rem 0.8rem; cursor: pointer; font-size: 0.85em; border-bottom: 1px solid #1a1a2e; color: #ccc; }
+        .demo-item:hover, .demo-item.selected { background: rgba(78, 204, 163, 0.15); color: #4ecca3; }
+        .demo-item .match { color: #e94560; font-weight: 600; }
+        .demo-item .kind { color: #666; font-size: 0.85em; margin-left: 0.5rem; }
+        #status {
+            margin-bottom: 1rem; padding: 0.75rem 1rem; border-radius: 8px;
+            background: #16213e; display: none;
+        }
+        #status.visible { display: block; }
+        .status-line { margin: 0.2rem 0; }
+        .status-line.active { color: #e94560; }
+        .status-line.done { color: #4ecca3; }
+        .status-line.error { color: #ff6b6b; }
+        #result { display: none; margin-bottom: 1rem; }
+        #result.visible { display: block; }
+        .actions { display: flex; gap: 0.75rem; flex-wrap: wrap; margin: 0.75rem 0 1rem; align-items: center; }
+        .hint { color: #888; font-size: 0.8em; }
+        table.files { width: 100%; border-collapse: collapse; font-size: 0.85em; margin-bottom: 0.75rem; }
+        table.files th, table.files td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid #2a2a4a; }
+        table.files th { color: #888; font-weight: 600; }
+        table.files td.size { text-align: right; font-variant-numeric: tabular-nums; color: #aaa; white-space: nowrap; }
+        details summary { cursor: pointer; color: #4ecca3; margin-bottom: 0.5rem; }
+        pre.log {
+            width: 100%; background: #0f0f23; border: 1px solid #333; border-radius: 8px;
+            padding: 1rem; font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+            font-size: 12px; line-height: 1.45; color: #ccc; white-space: pre-wrap;
+            max-height: 320px; overflow-y: auto;
+        }
+        pre.log.error { border-color: #ff6b6b; }
+        #build-info { position: fixed; bottom: 0.5rem; right: 0.75rem; font-size: 0.7em; color: #555; }
+    </style>
+</head>
+<body>
+    <h1>SWFRecomp</h1>
+    <p class="subtitle">In-Browser SWF Recompiler</p>
+    <p class="note">Recompiles a .swf to C right here in your browser, then packages the generated code with
+        the runtime sources and a build script so you can build the WebGPU WASM page locally with Emscripten.</p>
+
+    <div class="panel">
+        <div class="drop-zone" id="dropZone">
+            <p>Drop a .swf file here</p>
+            <p style="color: #666; margin-top: 0.5rem; font-size: 0.9em">or click to select</p>
+            <input type="file" id="fileInput" accept=".swf">
+        </div>
+
+        <div id="demoRow">
+            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <input id="demoSearch" type="text" placeholder="Search example SWFs..." autocomplete="off">
+                <button class="btn" id="demoBrowseBtn" style="padding: 0.4rem 0.6rem; font-size: 0.8em; border-color: #555; color: #888;">Browse</button>
+                <button class="btn" id="demoBtn">Recompile</button>
+            </div>
+            <div id="demoResults"></div>
+        </div>
+
+        <div id="status">
+            <div class="status-line" id="step-load">Loading recompiler</div>
+            <div class="status-line" id="step-recompile">Recompiling SWF to C</div>
+        </div>
+
+        <div id="result">
+            <div class="actions">
+                <button class="btn primary" id="dlBundleBtn">Download build bundle (.zip)</button>
+                <button class="btn" id="dlSourcesBtn">Generated C only (.zip)</button>
+                <span class="hint" id="dlHint"></span>
+            </div>
+            <div class="actions">
+                <button class="btn" id="runBtn">Build &amp; run in browser (WebGPU)</button>
+                <button class="btn" id="dlWasmBtn" style="display:none">Download guest .wasm</button>
+                <button class="btn" id="dlRunnableBtn" style="display:none">Download runnable (.zip)</button>
+                <span class="hint" id="runHint">Chrome required. Compiles the generated C with clang running in the browser (~100 MB download the first time).</span>
+            </div>
+            <div id="runStatus" style="display:none; margin-bottom: 0.75rem; padding: 0.6rem 1rem; border-radius: 8px; background: #16213e;">
+                <div class="status-line" id="step-guest">Compiling generated C in the browser</div>
+                <div class="status-line" id="step-host">Loading graphics host</div>
+                <div class="status-line" id="step-run">Running</div>
+            </div>
+            <canvas id="canvas" width="550" height="400" tabindex="0" style="display: none; max-width: 100%; border: 1px solid #333; border-radius: 8px; margin-bottom: 1rem; outline: none; background: #000;"></canvas>
+            <table class="files"><thead><tr><th>Generated file</th><th style="text-align:right">Size</th></tr></thead><tbody id="fileRows"></tbody></table>
+            <details>
+                <summary>Recompiler output</summary>
+                <pre class="log" id="log"></pre>
+            </details>
+        </div>
+
+        <pre class="log error" id="errorBox" style="display:none"></pre>
+    </div>
+
+    <div id="build-info"></div>
+    <script type="module" src="pipeline.js"></script>
+</body>
+</html>
