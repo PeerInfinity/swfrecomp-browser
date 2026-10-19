@@ -131,9 +131,9 @@ deliberately and never as part of a routine release.
 **MIT.** `LICENSE` is SWFRecomp-CC's root licence as of commit
 [`7819368b1`](https://github.com/PeerInfinity/SWFRecomp-CC/commit/7819368b16aacddc4895aa8dcfa2018439f309ef):
 SWFRecomp and SWFModernRuntime (Copyright (c) 2024 LittleCube) and the SWFRecomp-CC fork's
-additions (Copyright (c) 2025-2026 PeerInfinity). Between it and the build commit `344c85a16`,
-only docs, test results and licence files changed: the `SWFRecomp/` code and the
-`SWFModernRuntime/` and `docs/recompiler/` trees are identical. Its `THIRD_PARTY_NOTICES.md` is the
+additions (Copyright (c) 2025-2026 PeerInfinity). `LICENSE` and `THIRD_PARTY_NOTICES.md` are
+byte-identical at the build commit `344c85a16`, and no third-party piece was added to what is built: the
+JPEG-XR decoder's jxrlib is behind `SWF_HAVE_LIBJXR`, which no shipped build defines. Its `THIRD_PARTY_NOTICES.md` is the
 source of the table below.
 
 Third-party pieces compiled into the `.wasm` files or shipped as source in

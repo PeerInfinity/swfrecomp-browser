@@ -983,9 +983,9 @@
   },
   {
    "path": "README.md",
-   "bytes": 9605,
-   "md5": "cf3cfc383689f4a22da265ad271fea94",
-   "sha256": "fddb571e13e37df2bc8945ce5ca397d23c5d59a6de72acf91b4113ce72f6ae6c"
+   "bytes": 9649,
+   "md5": "288776eb8da997e5480a4ac45f83a640",
+   "sha256": "e6f14e2fb73af2993eb007028a8264c0f67d2f241cf421598c3efc25c8251f96"
   },
   {
    "path": "catalog.json",
@@ -2212,5 +2212,5 @@
    "sha256": "e6a68badcff806ed82bcd8de033058fda6835583c51a115c2d9213839791d61b"
   }
  ],
- "totalBytes": 24579293
+ "totalBytes": 24579337
 }
