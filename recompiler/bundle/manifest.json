@@ -49,7 +49,7 @@
 },
 {
 "path": "runtime/include/actionmodern/object.h",
-"size": 17314
+"size": 17794
 },
 {
 "path": "runtime/include/actionmodern/rando_ap.h",
@@ -69,7 +69,7 @@
 },
 {
 "path": "runtime/include/actionmodern/video_codec.h",
-"size": 3950
+"size": 5077
 },
 {
 "path": "runtime/include/amf_packet.h",
@@ -85,7 +85,7 @@
 },
 {
 "path": "runtime/include/avm2/avm2_abc.h",
-"size": 32811
+"size": 32989
 },
 {
 "path": "runtime/include/avm2/avm2_class.h",
@@ -93,7 +93,7 @@
 },
 {
 "path": "runtime/include/avm2/avm2_cpu_raster.h",
-"size": 5112
+"size": 5331
 },
 {
 "path": "runtime/include/avm2/avm2_e4x.h",
@@ -102,6 +102,10 @@
 {
 "path": "runtime/include/avm2/avm2_error.h",
 "size": 8705
+},
+{
+"path": "runtime/include/avm2/avm2_external.h",
+"size": 2692
 },
 {
 "path": "runtime/include/avm2/avm2_filters.h",
@@ -117,7 +121,11 @@
 },
 {
 "path": "runtime/include/avm2/avm2_globals.h",
-"size": 62053
+"size": 62654
+},
+{
+"path": "runtime/include/avm2/avm2_jpegxr.h",
+"size": 1978
 },
 {
 "path": "runtime/include/avm2/avm2_main.h",
@@ -133,7 +141,7 @@
 },
 {
 "path": "runtime/include/avm2/avm2_value.h",
-"size": 5749
+"size": 7380
 },
 {
 "path": "runtime/include/common.h",
@@ -154,6 +162,10 @@
 {
 "path": "runtime/include/gradient_ramp.h",
 "size": 6457
+},
+{
+"path": "runtime/include/html_img.h",
+"size": 6520
 },
 {
 "path": "runtime/include/libswf/capture.h",
@@ -177,7 +189,7 @@
 },
 {
 "path": "runtime/include/libswf/tag.h",
-"size": 42373
+"size": 43038
 },
 {
 "path": "runtime/include/memory/heap.h",
@@ -185,11 +197,11 @@
 },
 {
 "path": "runtime/include/rendering/render_webgpu.h",
-"size": 30969
+"size": 31938
 },
 {
 "path": "runtime/include/rendering/renderer.h",
-"size": 9655
+"size": 10146
 },
 {
 "path": "runtime/include/socket_events.h",
@@ -229,11 +241,11 @@
 },
 {
 "path": "runtime/src/actionmodern/action.c",
-"size": 3342018
+"size": 3369318
 },
 {
 "path": "runtime/src/actionmodern/action_queue.c",
-"size": 29539
+"size": 29931
 },
 {
 "path": "runtime/src/actionmodern/avm1_amf.c",
@@ -253,7 +265,7 @@
 },
 {
 "path": "runtime/src/actionmodern/object.c",
-"size": 74227
+"size": 74280
 },
 {
 "path": "runtime/src/actionmodern/registered_class.c",
@@ -277,7 +289,7 @@
 },
 {
 "path": "runtime/src/actionmodern/video_codec.c",
-"size": 25807
+"size": 27644
 },
 {
 "path": "runtime/src/amf_packet.c",
@@ -289,7 +301,7 @@
 },
 {
 "path": "runtime/src/audio/audio_output_web.c",
-"size": 3225
+"size": 9254
 },
 {
 "path": "runtime/src/avm2/avm2_amf.c",
@@ -297,11 +309,11 @@
 },
 {
 "path": "runtime/src/avm2/avm2_array.c",
-"size": 41902
+"size": 41936
 },
 {
 "path": "runtime/src/avm2/avm2_bitmap.c",
-"size": 155224
+"size": 164269
 },
 {
 "path": "runtime/src/avm2/avm2_bytearray.c",
@@ -309,11 +321,11 @@
 },
 {
 "path": "runtime/src/avm2/avm2_class.c",
-"size": 78877
+"size": 79469
 },
 {
 "path": "runtime/src/avm2/avm2_cpu_raster.c",
-"size": 22014
+"size": 31125
 },
 {
 "path": "runtime/src/avm2/avm2_date.c",
@@ -325,7 +337,7 @@
 },
 {
 "path": "runtime/src/avm2/avm2_display.c",
-"size": 801045
+"size": 823357
 },
 {
 "path": "runtime/src/avm2/avm2_e4x.c",
@@ -341,7 +353,7 @@
 },
 {
 "path": "runtime/src/avm2/avm2_external.c",
-"size": 14323
+"size": 22264
 },
 {
 "path": "runtime/src/avm2/avm2_filters.c",
@@ -357,11 +369,15 @@
 },
 {
 "path": "runtime/src/avm2/avm2_gc.c",
-"size": 46032
+"size": 46848
 },
 {
 "path": "runtime/src/avm2/avm2_globals.c",
-"size": 407732
+"size": 418477
+},
+{
+"path": "runtime/src/avm2/avm2_jpegxr.c",
+"size": 14042
 },
 {
 "path": "runtime/src/avm2/avm2_json.c",
@@ -369,7 +385,7 @@
 },
 {
 "path": "runtime/src/avm2/avm2_main.c",
-"size": 37668
+"size": 38013
 },
 {
 "path": "runtime/src/avm2/avm2_media.c",
@@ -381,7 +397,7 @@
 },
 {
 "path": "runtime/src/avm2/avm2_net.c",
-"size": 109829
+"size": 117485
 },
 {
 "path": "runtime/src/avm2/avm2_nsqname.c",
@@ -409,11 +425,11 @@
 },
 {
 "path": "runtime/src/avm2/avm2_regexp.c",
-"size": 39798
+"size": 40186
 },
 {
 "path": "runtime/src/avm2/avm2_stage3d.c",
-"size": 186869
+"size": 189932
 },
 {
 "path": "runtime/src/avm2/avm2_string.c",
@@ -421,11 +437,11 @@
 },
 {
 "path": "runtime/src/avm2/avm2_text.c",
-"size": 382028
+"size": 386739
 },
 {
 "path": "runtime/src/avm2/avm2_value.c",
-"size": 38061
+"size": 41605
 },
 {
 "path": "runtime/src/avm2/avm2_vector.c",
@@ -445,7 +461,7 @@
 },
 {
 "path": "runtime/src/libswf/ng_shared.c",
-"size": 99959
+"size": 105912
 },
 {
 "path": "runtime/src/libswf/shape_hit_test.c",
@@ -461,7 +477,7 @@
 },
 {
 "path": "runtime/src/libswf/tag.c",
-"size": 615949
+"size": 622555
 },
 {
 "path": "runtime/src/libswf/tag_stubs.c",
@@ -473,7 +489,7 @@
 },
 {
 "path": "runtime/src/rendering/render_webgpu.c",
-"size": 281125
+"size": 293377
 },
 {
 "path": "runtime/src/utils.c",
@@ -605,7 +621,7 @@
 },
 {
 "path": "runtime/third_party/quickjs-libregexp/libregexp.c",
-"size": 113209
+"size": 114630
 },
 {
 "path": "runtime/third_party/quickjs-libregexp/libregexp.h",

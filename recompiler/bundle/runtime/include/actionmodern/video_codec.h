@@ -77,6 +77,26 @@ int video_decoder_decode(VideoDecoderCtx* ctx, int frame_type,
 // Release a persistent decoder. Safe to pass NULL.
 void video_decoder_destroy(VideoDecoderCtx* ctx);
 
+// H.264 / AVC as FLV carries it (codec id 7), for the NetStream path.
+//
+// An FLV AVC video tag is [AVCPacketType u8][CompositionTime s24][body]:
+// type 0's body is an AVCDecoderConfigurationRecord, type 1's is one or more
+// length-prefixed NALUs (AVCC framing, never Annex B), type 2 is end of
+// sequence. The caller strips the 4-byte prefix and routes the body: the
+// record goes to video_avc_decoder_configure (libavcodec takes it verbatim as
+// avcC extradata, which also switches its parser to length-prefixed NALUs),
+// every type-1 body to video_decoder_decode. Kept apart from
+// video_codec_supported / video_decoder_create so the AVM1 and embedded
+// paths, which hand codec 7 payloads over unstripped, are unaffected.
+//
+// Returns NULL when this build has no H.264 decoder.
+VideoDecoderCtx* video_avc_decoder_create(void);
+
+// (Re)open the decoder with an AVCDecoderConfigurationRecord. Returns 1 on
+// success. Until this succeeds, video_decoder_decode on the context fails.
+int video_avc_decoder_configure(VideoDecoderCtx* ctx,
+                                const unsigned char* record, int record_len);
+
 // Resample a packed RGBA8 buffer (R=byte0, G=byte1, B=byte2, A=byte3) to new
 // dimensions. Uses libswscale when SWF_HAVE_LIBAVCODEC is defined (bilinear);
 // otherwise falls back to nearest-neighbour. Returns 1 on success and fills

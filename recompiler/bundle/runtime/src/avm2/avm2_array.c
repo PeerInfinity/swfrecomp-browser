@@ -1175,7 +1175,7 @@ static void array_init_ctor_args(Avm2Context* ctx, Avm2Object* obj,
 		{
 			avm2_throw_error(ctx, ctx->builtins.range_error_class,
 			                 "Error #1005: Array index is not a positive integer (%s).",
-			                 avm2_coerce_to_string(ctx, args[0])->utf8);
+			                 avm2_string_cstr(ctx, avm2_coerce_to_string(ctx, args[0])));
 		}
 		avm2_array_set_length(ctx, obj, n);
 		return;
@@ -1198,7 +1198,7 @@ static Avm2Value array_construct(Avm2Context* ctx, Avm2Class* cls,
 		{
 			avm2_throw_error(ctx, ctx->builtins.range_error_class,
 			                 "Error #1005: Array index is not a positive integer (%s).",
-			                 avm2_coerce_to_string(ctx, args[0])->utf8);
+			                 avm2_string_cstr(ctx, avm2_coerce_to_string(ctx, args[0])));
 		}
 		return avm2_object_value(avm2_array_new(ctx, n));
 	}

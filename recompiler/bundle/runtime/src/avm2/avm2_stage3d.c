@@ -56,6 +56,7 @@
 #include <avm2/avm2_error.h>
 #include <avm2/avm2_gc.h>
 #include <avm2/avm2_globals.h>
+#include <avm2/avm2_jpegxr.h>
 #include <avm2/avm2_main.h>
 #include <avm2/avm2_object.h>
 #include <avm2/avm2_value.h>
@@ -3109,6 +3110,90 @@ static int atf_parse_header(const uint8_t* b, uint32_t len,
 	return 1;
 }
 
+// The JPEG-XR-backed ATF formats 1 (RGBA8888, also 0) and 4 (CompressedAlpha)
+// — atf_jpegxr.rs:38-144, decoded in avm2_jpegxr.c (a no-op without
+// SWF_HAVE_LIBJXR). Ruffle uploads face 0 / mip 0 into layer 0 whatever the
+// texture's declared format; format 4 arrives here already DXT5-decoded to
+// RGBA8, the texel store's layout.
+static void s3d_upload_atf_jxr(Avm2Context* ctx, Avm2Texture3DExt* te,
+                               const uint8_t* atf, uint32_t len)
+{
+	uint8_t* rgba = NULL;
+	if (!avm2_atf_jxr_decode(atf, len, te->width, te->height, &rgba)) return;
+	uint32_t* tex = s3d_texels(ctx, te);
+	if (tex != NULL)
+	{
+		uint64_t n = (uint64_t) te->width * te->height;
+		for (uint64_t i = 0; i < n; i++)
+		{
+			const uint8_t* c = rgba + i * 4;
+			tex[i] = (uint32_t) c[0] | ((uint32_t) c[1] << 8)
+			       | ((uint32_t) c[2] << 16) | ((uint32_t) c[3] << 24);
+		}
+	}
+	free(rgba);
+}
+
+// ATF format 5 (RawCompressedAlpha): each face/mip is four length-prefixed
+// records (dxt5, pvrtc, etc1, etc2; render/src/atf.rs:143-161). Ruffle uploads
+// face 0 / mip 0's dxt5 record as-is (atf_jpegxr.rs:146-163), which wgpu
+// samples as Bc3RgbaUnorm; the texel store is RGBA8, so decode it here with
+// the Mesa s3tc rounding avm2_bc3_decode_block uses. No JPEG-XR is involved.
+// Returns 1 for a format-5 upload (a record of the wrong size leaves the
+// texture untouched), 0 for any other format or a truncated record.
+static int s3d_upload_atf_raw_dxt5(Avm2Context* ctx, Avm2Texture3DExt* te,
+                                   const uint8_t* b, uint32_t len)
+{
+	// Header: "ATF", then either u24 length (version 0) or 0,0,0,0xFF,
+	// version, u32 length; then tdata, log2 w, log2 h, mip count.
+	uint32_t p;
+	int version = 0;
+	if (len < 7) return 0;
+	if (b[6] == 0xFF)
+	{
+		if (len < 12) return 0;
+		version = b[7];
+		p = 12;
+	}
+	else
+	{
+		p = 6;
+	}
+	if (len - p < 4 || (b[p] & 0x7F) != 5) return 0;
+	p += 4;
+
+	uint32_t n;
+	if (version == 0)
+	{
+		if (len - p < 3) return 0;
+		n = ((uint32_t) b[p] << 16) | ((uint32_t) b[p + 1] << 8) | b[p + 2];
+		p += 3;
+	}
+	else
+	{
+		if (len - p < 4) return 0;
+		n = ((uint32_t) b[p] << 24) | ((uint32_t) b[p + 1] << 16)
+		  | ((uint32_t) b[p + 2] << 8) | b[p + 3];
+		p += 4;
+	}
+	if (len - p < n) return 0;
+
+	// The record holds exactly (w/4)*(h/4) 16-byte blocks; Ruffle's
+	// copy_pixels_to_texture rejects any other size, so do we.
+	uint32_t w = te->width, h = te->height;
+	if (w < 4 || h < 4 || (uint64_t) (w / 4) * (h / 4) * 16 != n) return 1;
+	uint32_t* tex = s3d_texels(ctx, te);
+	if (tex == NULL) return 1;
+	const uint8_t* blocks = b + p;
+	uint32_t bw = w / 4, bh = h / 4;
+	for (uint32_t by = 0; by < bh; by++)
+		for (uint32_t bx = 0; bx < bw; bx++)
+			avm2_bc3_decode_block(blocks + ((size_t) by * bw + bx) * 16,
+			                      (uint8_t*) (tex + (size_t) by * 4 * w + bx * 4),
+			                      w * 4);
+	return 1;
+}
+
 static Avm2Value texture_upload_compressed(Avm2Activation* act, int is_cube)
 {
 	Avm2Context* ctx = act->ctx;
@@ -3139,6 +3224,8 @@ static Avm2Value texture_upload_compressed(Avm2Activation* act, int is_cube)
 	if ((is_cube != 0) != (cube != 0))
 		avm2_throw_error(ctx, ctx->builtins.argument_error_class,
 		                 "Error #3675: Texture format mismatch.");
+	if (!s3d_upload_atf_raw_dxt5(ctx, te, ba->bytes + offset, ba->len - offset))
+		s3d_upload_atf_jxr(ctx, te, ba->bytes + offset, ba->len - offset);
 	return avm2_undefined();
 }
 

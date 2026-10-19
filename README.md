@@ -131,7 +131,7 @@ deliberately and never as part of a routine release.
 **MIT.** `LICENSE` is SWFRecomp-CC's root licence as of commit
 [`7819368b1`](https://github.com/PeerInfinity/SWFRecomp-CC/commit/7819368b16aacddc4895aa8dcfa2018439f309ef):
 SWFRecomp and SWFModernRuntime (Copyright (c) 2024 LittleCube) and the SWFRecomp-CC fork's
-additions (Copyright (c) 2025-2026 PeerInfinity). Between the build commit `4c450f076` and it,
+additions (Copyright (c) 2025-2026 PeerInfinity). Between it and the build commit `344c85a16`,
 only docs, test results and licence files changed: the `SWFRecomp/` code and the
 `SWFModernRuntime/` and `docs/recompiler/` trees are identical. Its `THIRD_PARTY_NOTICES.md` is the
 source of the table below.

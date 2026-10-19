@@ -7166,6 +7166,209 @@ static Avm2Value currencyparseresult_get_string(Avm2Activation* act)
 	                                15, NULL);
 }
 
+// flash.globalization.Collator — Flash (Windows) behaviour as the three
+// collator_* tests pin it. State lives in dont_enum dynamic slots, like
+// CurrencyParseResult. The requested locale ID is stored verbatim (Windows
+// round-trips "i-default", "de-DE@collation=phonebook" and "").
+static const char* const collator_flag_slots[6] = {
+	"_ignoreCase", "_ignoreCharacterWidth", "_ignoreDiacritics",
+	"_ignoreKanaType", "_ignoreSymbols", "_numericComparison",
+};
+
+// FP's Collator constructor is an AS3 wrapper over a private native ctor(),
+// so that frame sits innermost ("Collator/ctor()" above "Collator()").
+static const Avm2MethodRef collator_ctor_frame =
+	{ NULL, NULL, "flash.globalization::Collator/ctor", 0, 0 };
+
+_Noreturn static void collator_throw_null(Avm2Context* ctx, int in_ctor,
+                                          const char* param)
+{
+	if (in_ctor) avm2_callstack_push(ctx, &collator_ctor_frame, NULL);
+	avm2_throw_error(ctx, ctx->builtins.type_error_class,
+	                 "Error #2007: Parameter %s must be non-null.", param);
+}
+
+static Avm2Value collator_ctor(Avm2Activation* act)
+{
+	Avm2Context* ctx = act->ctx;
+	if (act->this_val.kind != AVM2_VALUE_OBJECT) return avm2_undefined();
+	Avm2Object* self = act->this_val.u.obj;
+	// requestedLocaleIDName is checked before initialMode (null, null -> id).
+	if (act->argc < 1 || act->args[0].kind == AVM2_VALUE_NULL
+	    || act->args[0].kind == AVM2_VALUE_UNDEFINED)
+		collator_throw_null(ctx, 1, "requestedLocaleIDName");
+	const Avm2String* id = avm2_coerce_to_string(ctx, act->args[0]);
+	int matching = 0;
+	if (act->argc > 1 && act->args[1].kind != AVM2_VALUE_UNDEFINED)
+	{
+		if (act->args[1].kind == AVM2_VALUE_NULL)
+			collator_throw_null(ctx, 1, "initialMode");
+		const Avm2String* mode = avm2_coerce_to_string(ctx, act->args[1]);
+		if (mode->len == 8 && memcmp(mode->utf8, "matching", 8) == 0)
+		{
+			matching = 1;
+		}
+		else if (!(mode->len == 7 && memcmp(mode->utf8, "sorting", 7) == 0))
+		{
+			avm2_callstack_push(ctx, &collator_ctor_frame, NULL);
+			avm2_throw_error(ctx, ctx->builtins.argument_error_class,
+			                 "Error #1508: The value specified for argument %s "
+			                 "is invalid.", "initialMode");
+		}
+	}
+	avm2_object_set_dynamic(ctx, self, "_requestedLocaleIDName", 22,
+	                        avm2_string(id))->dont_enum = 1;
+	// MATCHING turns on every ignore* flag; numericComparison stays false.
+	for (int i = 0; i < 6; i++)
+	{
+		avm2_object_set_dynamic(ctx, self, collator_flag_slots[i],
+		                        (uint32_t) strlen(collator_flag_slots[i]),
+		                        avm2_bool(matching && i < 5))->dont_enum = 1;
+	}
+	return avm2_undefined();
+}
+
+static Avm2Value collator_get_flag(Avm2Activation* act, int i)
+{
+	return avm2_get_public_property(act->ctx, act->this_val, collator_flag_slots[i],
+	                                (uint32_t) strlen(collator_flag_slots[i]), NULL);
+}
+
+static Avm2Value collator_set_flag(Avm2Activation* act, int i)
+{
+	if (act->this_val.kind != AVM2_VALUE_OBJECT) return avm2_undefined();
+	int v = act->argc > 0 && avm2_coerce_to_boolean(act->args[0]);
+	avm2_object_set_dynamic(act->ctx, act->this_val.u.obj, collator_flag_slots[i],
+	                        (uint32_t) strlen(collator_flag_slots[i]),
+	                        avm2_bool(v))->dont_enum = 1;
+	return avm2_undefined();
+}
+
+#define COLLATOR_FLAG_ACCESSORS(idx, nm) \
+	static Avm2Value collator_get_##nm(Avm2Activation* act) \
+	{ return collator_get_flag(act, idx); } \
+	static Avm2Value collator_set_##nm(Avm2Activation* act) \
+	{ return collator_set_flag(act, idx); }
+COLLATOR_FLAG_ACCESSORS(0, ignoreCase)
+COLLATOR_FLAG_ACCESSORS(1, ignoreCharacterWidth)
+COLLATOR_FLAG_ACCESSORS(2, ignoreDiacritics)
+COLLATOR_FLAG_ACCESSORS(3, ignoreKanaType)
+COLLATOR_FLAG_ACCESSORS(4, ignoreSymbols)
+COLLATOR_FLAG_ACCESSORS(5, numericComparison)
+#undef COLLATOR_FLAG_ACCESSORS
+
+static Avm2Value collator_get_requested_locale(Avm2Activation* act)
+{
+	return avm2_get_public_property(act->ctx, act->this_val,
+	                                "_requestedLocaleIDName", 22, NULL);
+}
+
+static Avm2Value collator_get_last_status(Avm2Activation* act)
+{
+	return avm2_string(avm2_string_from_literal(act->ctx, "noError"));
+}
+
+// A fresh, non-fixed Vector.<String> per call (callers may mutate it).
+static Avm2Value collator_get_available_locales(Avm2Activation* act)
+{
+	Avm2Context* ctx = act->ctx;
+	Avm2Class* vec_cls = avm2_vector_apply(ctx, ctx->builtins.string_class);
+	Avm2Object* out = avm2_vector_new(ctx, vec_cls, 0, 0);
+	avm2_vector_set_index(ctx, out, 0,
+	                      avm2_string(avm2_string_from_literal(ctx, "en-US")));
+	return avm2_object_value(out);
+}
+
+static uint32_t collator_next_cp(const char* s, uint32_t len, uint32_t* i)
+{
+	const unsigned char* p = (const unsigned char*) s;
+	uint32_t c = p[*i];
+	uint32_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;
+	if (*i + n > len) n = 1;
+	if (n == 2) c = ((c & 0x1f) << 6) | (p[*i + 1] & 0x3f);
+	else if (n == 3) c = ((c & 0x0f) << 12) | ((p[*i + 1] & 0x3f) << 6)
+	                     | (p[*i + 2] & 0x3f);
+	else if (n == 4) c = ((c & 0x07) << 18) | ((p[*i + 1] & 0x3f) << 12)
+	                     | ((p[*i + 2] & 0x3f) << 6) | (p[*i + 3] & 0x3f);
+	*i += n;
+	return c;
+}
+
+// Collation weights of one code point: primary = base letter, case-folded
+// (Latin-1 accented letters fold to their base); secondary = the diacritic
+// (0 = none); tertiary = case (0 lower, 1 upper).
+static void collator_weights(uint32_t c, uint32_t* pri, uint32_t* sec,
+                             uint32_t* ter)
+{
+	// Base letters of U+00C0..U+00FF ('\0' = not a letter, keep as is).
+	static const char latin1_base[64] =
+		"AAAAAAACEEEEIIII" "DNOOOOO\0OUUUUYTs"
+		"aaaaaaaceeeeiiii" "dnooooo\0ouuuuyty";
+	*sec = 0;
+	*ter = 0;
+	if (c >= 0xC0 && c <= 0xFF && latin1_base[c - 0xC0] != '\0')
+	{
+		char b = latin1_base[c - 0xC0];
+		*sec = c;
+		c = (uint32_t) (unsigned char) b;
+	}
+	if (c >= 'A' && c <= 'Z')
+	{
+		*ter = 1;
+		c += 'a' - 'A';
+	}
+	*pri = c;
+}
+
+// Flash (Windows) ordering, verified against collator_compare_basic: primary
+// key first, then diacritics — which ALWAYS count, even with ignoreDiacritics
+// or in MATCHING mode (expected "e vs é: -1" in every config) — then case,
+// lowercase first, unless ignoreCase.
+static int collator_compare_strings(const Avm2String* a, const Avm2String* b,
+                                    int ignore_case)
+{
+	int sec_diff = 0, ter_diff = 0;
+	uint32_t ia = 0, ib = 0;
+	while (ia < a->len && ib < b->len)
+	{
+		uint32_t pa, sa, ta, pb, sb, tb;
+		collator_weights(collator_next_cp(a->utf8, a->len, &ia), &pa, &sa, &ta);
+		collator_weights(collator_next_cp(b->utf8, b->len, &ib), &pb, &sb, &tb);
+		if (pa != pb) return pa < pb ? -1 : 1;
+		if (sec_diff == 0 && sa != sb) sec_diff = sa < sb ? -1 : 1;
+		if (ter_diff == 0 && ta != tb) ter_diff = ta < tb ? -1 : 1;
+	}
+	if (ia < a->len) return 1;
+	if (ib < b->len) return -1;
+	if (sec_diff != 0) return sec_diff;
+	return ignore_case ? 0 : ter_diff;
+}
+
+static int collator_compare_args(Avm2Activation* act)
+{
+	Avm2Context* ctx = act->ctx;
+	if (act->argc < 1 || act->args[0].kind == AVM2_VALUE_NULL
+	    || act->args[0].kind == AVM2_VALUE_UNDEFINED)
+		collator_throw_null(ctx, 0, "string1");
+	if (act->argc < 2 || act->args[1].kind == AVM2_VALUE_NULL
+	    || act->args[1].kind == AVM2_VALUE_UNDEFINED)
+		collator_throw_null(ctx, 0, "string2");
+	const Avm2String* a = avm2_coerce_to_string(ctx, act->args[0]);
+	const Avm2String* b = avm2_coerce_to_string(ctx, act->args[1]);
+	int ignore_case = avm2_coerce_to_boolean(collator_get_flag(act, 0));
+	return collator_compare_strings(a, b, ignore_case);
+}
+
+static Avm2Value collator_compare(Avm2Activation* act)
+{
+	return avm2_integer(collator_compare_args(act));
+}
+
+static Avm2Value collator_equals(Avm2Activation* act)
+{
+	return avm2_bool(collator_compare_args(act) == 0);
+}
+
 // flash.crypto.generateRandomBytes(n): a package-level FUNCTION, not a class
 // member. Deterministic here on purpose — the corpus grades only the length,
 // and a seeded stream keeps runs byte-identical.
@@ -7296,8 +7499,7 @@ static void register_platform_stubs(Avm2Context* ctx)
 		                                 flashtrace_setter_noop, 1);
 	}
 
-	// flash.globalization.CurrencyParseResult — the first (and so far only)
-	// class in the flash.globalization package.
+	// flash.globalization.CurrencyParseResult.
 	{
 		Avm2Class* cls = avm2_builtin_class(ctx, "flash.globalization",
 		                                    "CurrencyParseResult", obj);
@@ -7308,6 +7510,62 @@ static void register_platform_stubs(Avm2Context* ctx)
 		                        currencyparseresult_get_value, NULL);
 		avm2_builtin_add_getset(ctx, cls, "currencyString",
 		                        currencyparseresult_get_string, NULL);
+	}
+
+	// flash.globalization.Collator and its three constant tables.
+	{
+		Avm2Class* cls = avm2_builtin_class(ctx, "flash.globalization",
+		                                    "Collator", obj);
+		cls->flags |= AVM2_CLASS_FLAG_FINAL;
+		cls->instance_init.fn = collator_ctor;
+		cls->instance_init.debug_name = "Collator";
+		avm2_builtin_add_getset(ctx, cls, "ignoreCase",
+		                        collator_get_ignoreCase, collator_set_ignoreCase);
+		avm2_builtin_add_getset(ctx, cls, "ignoreCharacterWidth",
+		                        collator_get_ignoreCharacterWidth,
+		                        collator_set_ignoreCharacterWidth);
+		avm2_builtin_add_getset(ctx, cls, "ignoreDiacritics",
+		                        collator_get_ignoreDiacritics,
+		                        collator_set_ignoreDiacritics);
+		avm2_builtin_add_getset(ctx, cls, "ignoreKanaType",
+		                        collator_get_ignoreKanaType,
+		                        collator_set_ignoreKanaType);
+		avm2_builtin_add_getset(ctx, cls, "ignoreSymbols",
+		                        collator_get_ignoreSymbols,
+		                        collator_set_ignoreSymbols);
+		avm2_builtin_add_getset(ctx, cls, "numericComparison",
+		                        collator_get_numericComparison,
+		                        collator_set_numericComparison);
+		// Windows FP reports the requested ID back as the actual one.
+		avm2_builtin_add_getset(ctx, cls, "requestedLocaleIDName",
+		                        collator_get_requested_locale, NULL);
+		avm2_builtin_add_getset(ctx, cls, "actualLocaleIDName",
+		                        collator_get_requested_locale, NULL);
+		avm2_builtin_add_getset(ctx, cls, "lastOperationStatus",
+		                        collator_get_last_status, NULL);
+		avm2_builtin_add_method_n(ctx, cls, "compare", collator_compare, 2);
+		avm2_builtin_add_method_n(ctx, cls, "equals", collator_equals, 2);
+		avm2_builtin_add_static_method_n(ctx, cls, "getAvailableLocaleIDNames",
+		                                 collator_get_available_locales, 0);
+
+		Avm2Class* mode = avm2_builtin_class(ctx, "flash.globalization",
+		                                     "CollatorMode", obj);
+		mode->flags |= AVM2_CLASS_FLAG_FINAL;
+		avm2_builtin_add_static_const(ctx, mode, "SORTING",
+			avm2_string(avm2_string_from_literal(ctx, "sorting")));
+		avm2_builtin_add_static_const(ctx, mode, "MATCHING",
+			avm2_string(avm2_string_from_literal(ctx, "matching")));
+
+		Avm2Class* lid = avm2_builtin_class(ctx, "flash.globalization",
+		                                    "LocaleID", obj);
+		avm2_builtin_add_static_const(ctx, lid, "DEFAULT",
+			avm2_string(avm2_string_from_literal(ctx, "i-default")));
+
+		Avm2Class* los = avm2_builtin_class(ctx, "flash.globalization",
+		                                    "LastOperationStatus", obj);
+		los->flags |= AVM2_CLASS_FLAG_FINAL;
+		avm2_builtin_add_static_const(ctx, los, "NO_ERROR",
+			avm2_string(avm2_string_from_literal(ctx, "noError")));
 	}
 
 

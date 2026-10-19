@@ -10,6 +10,7 @@
 #include "tesselator.h"
 #include <curve_flatten.h>  // w2-gfx-flatten: lyon/Levien quadratic flattening
 #include <gradient_ramp.h>  // w2-gfx-gradient: Ruffle CommonGradient::new ramp walk
+#include <html_img.h>       // w2-htmltext: shared AVM1/AVM2 htmlText <img> rules
 
 #include <libswf/generated_data.h>
 #ifdef __EMSCRIPTEN__
@@ -941,6 +942,8 @@ static ASObject* g_object_prototype = NULL;
 // Global Array.prototype — shared by all arrays for instanceof and arguments.__proto__
 static ASObject* g_array_prototype = NULL;
 static int g_array_proto_methods_init = 0;  // Whether Array.prototype methods have been registered
+// The function ensureGlobalInit registers as `_global.Array` (see arrayResolveGlobalCtor)
+static ASFunction* g_array_ctor_registered = NULL;
 static ASFunction g_array_proto_funcs[12];  // push,pop,shift,unshift,reverse,join,toString,concat,slice,splice,sort,sortOn
 // File-scope Array constructor (shared between actionGetVariable("Array") and initArrayPrototypeMethods)
 static ASFunction g_array_constructor_static;
@@ -2880,181 +2883,562 @@ static ActionVar builtin_sound_start(SWFAppContext* app_context, ActionVar* args
 
 // (setObjectProto is declared in action_internal.h)
 
-// ContextMenuItem.copy() — creates a copy of the menu item by copying the 5
-// instance-level properties (caption, onSelect, separatorBefore, enabled,
-// visible). Forward-declared so ContextMenu.copy() can use it for customItems
-// elements that are instanceof ContextMenuItem.
-static ActionVar builtin_contextmenuitem_copy(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj);
+// ============================================================================
+// AS-SEMANTICS HELPER LAYER (s22 w2-as-core)
+//
+// Flash implements several built-in classes in ActionScript bytecode, not in
+// native code (AsBroadcaster, ContextMenu, ContextMenuItem, AsSetupError,
+// flash.geom.Point/Rectangle/Matrix; Ruffle mirrors them as
+// core/src/avm1/globals/*.as). Their observable behaviour is the ORDER of every
+// property get/set and method dispatch, so a faithful C port must perform each
+// step the way the bytecode would: through the VM's own ops, never through raw
+// getProperty/setProperty. These helpers are that layer. Each one is a thin
+// wrapper over a stack op, so getters/setters (addProperty), __resolve,
+// watchers, primitive auto-boxing, user overrides and SWF-version rules all
+// apply exactly as they do for compiled AS.
+//
+// Contracts (all values are ActionVar by value; nothing is retained for the
+// caller beyond what the underlying op does):
+//   as_undef() / as_num(d) / as_bool(b) / as_str(app, utf8)
+//       Value constructors. as_num is always an F64. as_str mallocs a new
+//       (never freed) UTF-16 buffer per call.
+//   as_key(app, utf8)
+//       The same STRING value, interned by content for the process lifetime:
+//       no per-call allocation. Used for every member name below; use it for
+//       any short fixed literal (names, toString pieces). (added s22 w2-geom-port)
+//   as_is_object(v)
+//       1 for OBJECT/ARRAY/FUNCTION/MOVIECLIP (the AS "object" values).
+//   as_this(this_obj)
+//       The receiver of a type-2 builtin as a value: OBJECT(this_obj), or ARRAY
+//       when the dispatcher flagged an array receiver; with this_obj == NULL,
+//       the method-arm receiver (g_c_function_this_obj) or the event clip.
+//       It trusts g_call_this_type, which the script dispatch arms set for a
+//       native callee; a builtin also called DIRECTLY from C with an ASObject
+//       must not use it (see builtin_broadcaster_broadcastMessage).
+//   as_get(app, obj, name)        == obj[name]      (ActionGetMember)
+//   as_get_index(app, obj, i)     == obj[i]         (ActionGetMember, numeric key)
+//   as_set(app, obj, name, val)   ;  obj[name] = val (ActionSetMember)
+//   as_call_method(app, obj, name, args, n) == obj[name](args...)
+//       ActionCallMethod: dispatches through the object (user overrides,
+//       __resolve, primitive receivers boxed by the dispatcher). Calling on
+//       undefined/null yields undefined, as in AS.
+//   as_get_global(app, name)      == _global[name] on the CURRENT global
+//       (the version-appropriate one, getActiveGlobal).
+//   as_new_global(app, name, args, n) == new _global[name](args...)
+//       ActionNewMethod on the CURRENT global: what a `new Name()` inside a
+//       globally-defined AS class body resolves to (its scope chain is only the
+//       global). Re-resolved on every call, so a replaced global is honoured.
+//   as_new_value(app, ctor, args, n) == new ctor(args...)
+//       ActionNewMethod with a blank name: constructs the given value.
+//   as_new_scoped(app, name, args, n) == new Name(args...), Name looked up
+//       through the CALLER's live scope chain in Flash order (scope entries
+//       innermost first, then the current timeline, then the current _global)
+//       and constructed as a value. Use where Flash's native resolves that way
+//       (AsSetupError finds `_root.Error` first). Unlike ActionNewObject /
+//       ActionGetVariable it never short-circuits a built-in name to the
+//       native class, so a replaced _global.Name is honoured.
+//   as_equals(app, a, b)  -> a == b   (ActionEquals2: valueOf/toString fire)
+//   as_less(app, a, b)    -> a < b    (ActionLess2: valueOf fires; NaN -> 0)
+//   as_add(app, a, b)     -> a + b    (ActionAdd2: string concat or numeric)
+//   as_set_prop_flags(app, obj, names, flags)
+//       ASSetPropFlags(obj, names, flags); names == NULL means `null` (all).
+// ============================================================================
+extern MovieClip* g_event_this_mc;
+extern u8 g_call_this_type;
+static inline ASObject* getActiveGlobal(void);
+static ActionVar actionASSetPropFlags_func2(SWFAppContext* app_context, ActionVar* args, u32 num_args, ActionVar* registers, void* this_obj);
 
-// True when `obj` has ContextMenuItem.prototype on its __proto__ chain.
-static int isContextMenuItemInstance(ASObject* obj)
+static ActionVar as_undef(void)
 {
-	extern ASFunction g_stub_ctors[];
-	if (obj == NULL || g_stub_ctors[5].prototype_obj == NULL) return 0;
-	ASObject* p = obj;
-	for (int i = 0; i < 64; i++) {
-		ActionVar* pv = getProperty(p, "__proto__", 9);
-		if (pv == NULL || pv->type != ACTION_STACK_VALUE_OBJECT || pv->data.numeric_value == 0) return 0;
-		ASObject* parent = (ASObject*)(uintptr_t)pv->data.numeric_value;
-		if (parent == g_stub_ctors[5].prototype_obj) return 1;
-		if (parent == p) return 0;
-		p = parent;
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_UNDEFINED;
+	return v;
+}
+
+static ActionVar as_num(double d)
+{
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_F64;
+	VAL(double, &v.data.numeric_value) = d;
+	return v;
+}
+
+static ActionVar as_bool(int b)
+{
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_BOOLEAN;
+	v.data.numeric_value = b ? 1 : 0;
+	return v;
+}
+
+static ActionVar as_str(SWFAppContext* app_context, const char* utf8)
+{
+	ActionVar v = {0};
+	u32 u16_len = 0;
+	v.type = ACTION_STACK_VALUE_STRING;
+	v.data.numeric_value = (u64)(uintptr_t) utf8_to_u16(app_context, utf8, (u32) strlen(utf8), &u16_len);
+	v.str_size = u16_len;
+	return v;
+}
+
+// A property-name key for the helpers below. as_str mallocs a fresh UTF-16
+// buffer that nothing frees (stack strings are non-owning), so building every
+// member key with it leaked one allocation per property access — unbounded for
+// the geom classes, whose every get/set goes through here. Keys are instead
+// interned by content in a small process-lifetime table (names are a small
+// fixed set: class bodies' literals and event names). A full table falls back
+// to as_str. The key is a non-owning STRING value, exactly what as_str yields.
+#define AS_KEY_SLOTS 512
+static struct { char* name; uint16_t* u16; u32 len; } g_as_keys[AS_KEY_SLOTS];
+
+static ActionVar as_key(SWFAppContext* app_context, const char* name)
+{
+	u32 h = 2166136261u;
+	for (const char* c = name; *c; c++) h = (h ^ (u8) *c) * 16777619u;
+	for (u32 i = 0; i < AS_KEY_SLOTS; i++)
+	{
+		u32 slot = (h + i) & (AS_KEY_SLOTS - 1);
+		if (g_as_keys[slot].name == NULL)
+		{
+			if (i >= AS_KEY_SLOTS / 2) break;  // keep probes short; fall back
+			u32 len = 0;
+			uint16_t* u16 = utf8_to_u16(app_context, name, (u32) strlen(name), &len);
+			char* copy = strdup(name);
+			if (copy == NULL) break;
+			g_as_keys[slot].name = copy;
+			g_as_keys[slot].u16 = u16;
+			g_as_keys[slot].len = len;
+		}
+		if (strcmp(g_as_keys[slot].name, name) == 0)
+		{
+			ActionVar v = {0};
+			v.type = ACTION_STACK_VALUE_STRING;
+			v.data.numeric_value = (u64)(uintptr_t) g_as_keys[slot].u16;
+			v.str_size = g_as_keys[slot].len;
+			return v;
+		}
 	}
+	return as_str(app_context, name);
+}
+
+static int as_is_object(const ActionVar* v)
+{
+	return v->type == ACTION_STACK_VALUE_OBJECT || v->type == ACTION_STACK_VALUE_ARRAY ||
+	       v->type == ACTION_STACK_VALUE_FUNCTION || v->type == ACTION_STACK_VALUE_MOVIECLIP;
+}
+
+static ActionVar as_this(void* this_obj)
+{
+	ActionVar v = as_undef();
+	if (this_obj != NULL)
+	{
+		v.type = (g_call_this_type == ACTION_STACK_VALUE_ARRAY) ? ACTION_STACK_VALUE_ARRAY
+		                                                         : ACTION_STACK_VALUE_OBJECT;
+		v.data.numeric_value = (u64)(uintptr_t) this_obj;
+	}
+	else if (g_c_function_this_obj != NULL)
+	{
+		v.type = ACTION_STACK_VALUE_OBJECT;
+		v.data.numeric_value = (u64)(uintptr_t) g_c_function_this_obj;
+	}
+	else if (g_event_this_mc != NULL && g_event_this_mc->depth != INT_MIN)
+	{
+		v.type = ACTION_STACK_VALUE_MOVIECLIP;
+		v.data.numeric_value = (u64)(uintptr_t) g_event_this_mc;
+	}
+	return v;
+}
+
+static ActionVar as_get(SWFAppContext* app_context, ActionVar* obj, const char* name)
+{
+	ActionVar o = *obj, k = as_key(app_context, name), r;
+	pushVar(app_context, &o);
+	pushVar(app_context, &k);
+	actionGetMember(app_context);
+	popVar(app_context, &r);
+	return r;
+}
+
+static ActionVar as_get_index(SWFAppContext* app_context, ActionVar* obj, u32 index)
+{
+	ActionVar o = *obj, k = as_num((double) index), r;
+	pushVar(app_context, &o);
+	pushVar(app_context, &k);
+	actionGetMember(app_context);
+	popVar(app_context, &r);
+	return r;
+}
+
+static void as_set(SWFAppContext* app_context, ActionVar* obj, const char* name, ActionVar* val)
+{
+	ActionVar o = *obj, k = as_key(app_context, name), v = *val;
+	pushVar(app_context, &o);
+	pushVar(app_context, &k);
+	pushVar(app_context, &v);
+	actionSetMember(app_context);
+}
+
+// Pushes args in CallMethod/NewMethod order: last argument deepest, then the
+// count (args[0] ends up directly below the count).
+static void as_push_call_args(SWFAppContext* app_context, ActionVar* args, u32 n)
+{
+	for (u32 i = n; i > 0; i--)
+	{
+		ActionVar a = args[i - 1];
+		pushVar(app_context, &a);
+	}
+	ActionVar c = as_num((double) n);
+	pushVar(app_context, &c);
+}
+
+static ActionVar as_call_method(SWFAppContext* app_context, ActionVar* obj, const char* name, ActionVar* args, u32 n)
+{
+	char str_buffer[17];
+	ActionVar o = *obj, k = as_key(app_context, name), r;
+	as_push_call_args(app_context, args, n);
+	pushVar(app_context, &o);
+	pushVar(app_context, &k);
+	actionCallMethod(app_context, str_buffer);
+	popVar(app_context, &r);
+	return r;
+}
+
+static ActionVar as_get_global(SWFAppContext* app_context, const char* name)
+{
+	ActionVar g = as_undef();
+	ASObject* ag = getActiveGlobal();
+	if (ag == NULL) return g;
+	g.type = ACTION_STACK_VALUE_OBJECT;
+	g.data.numeric_value = (u64)(uintptr_t) ag;
+	return as_get(app_context, &g, name);
+}
+
+static ActionVar as_new_global(SWFAppContext* app_context, const char* name, ActionVar* args, u32 n)
+{
+	ActionVar g = as_undef(), k = as_key(app_context, name), r;
+	ASObject* ag = getActiveGlobal();
+	if (ag != NULL)
+	{
+		g.type = ACTION_STACK_VALUE_OBJECT;
+		g.data.numeric_value = (u64)(uintptr_t) ag;
+	}
+	as_push_call_args(app_context, args, n);
+	pushVar(app_context, &g);
+	pushVar(app_context, &k);
+	actionNewMethod(app_context);
+	popVar(app_context, &r);
+	return r;
+}
+
+static ActionVar as_new_value(SWFAppContext* app_context, ActionVar* ctor, ActionVar* args, u32 n)
+{
+	ActionVar c = *ctor, k = as_undef(), r;
+	as_push_call_args(app_context, args, n);
+	pushVar(app_context, &c);
+	pushVar(app_context, &k);
+	actionNewMethod(app_context);
+	popVar(app_context, &r);
+	return r;
+}
+
+static ActionVar as_new_scoped(SWFAppContext* app_context, const char* name, ActionVar* args, u32 n)
+{
+	extern MovieClip root_movieclip;
+	ActionVar ctor = as_undef();
+	// Innermost scope first: locals/with objects/captured frames, then the
+	// current timeline, then the current _global.
+	for (int i = (int) scope_depth - 1; i >= 0 && ctor.type == ACTION_STACK_VALUE_UNDEFINED; i--)
+	{
+		ActionVar holder = as_undef();
+		if (scope_mc[i] != NULL) {
+			holder.type = ACTION_STACK_VALUE_MOVIECLIP;
+			holder.data.numeric_value = (u64)(uintptr_t) scope_mc[i];
+		} else if (scope_chain[i] != NULL) {
+			holder.type = ACTION_STACK_VALUE_OBJECT;
+			holder.data.numeric_value = (u64)(uintptr_t) scope_chain[i];
+		} else {
+			continue;
+		}
+		ctor = as_get(app_context, &holder, name);
+	}
+	if (ctor.type == ACTION_STACK_VALUE_UNDEFINED)
+	{
+		ActionVar tl = as_undef();
+		tl.type = ACTION_STACK_VALUE_MOVIECLIP;
+		tl.data.numeric_value = (u64)(uintptr_t)(g_current_context ? g_current_context : &root_movieclip);
+		ctor = as_get(app_context, &tl, name);
+	}
+	if (ctor.type == ACTION_STACK_VALUE_UNDEFINED)
+		ctor = as_get_global(app_context, name);
+	return as_new_value(app_context, &ctor, args, n);
+}
+
+static int as_equals(SWFAppContext* app_context, ActionVar* a, ActionVar* b)
+{
+	ActionVar x = *a, y = *b, r;
+	pushVar(app_context, &x);
+	pushVar(app_context, &y);
+	actionEquals2(app_context);
+	popVar(app_context, &r);
+	return r.type == ACTION_STACK_VALUE_BOOLEAN && r.data.numeric_value != 0;
+}
+
+static int as_less(SWFAppContext* app_context, ActionVar* a, ActionVar* b)
+{
+	ActionVar x = *a, y = *b, r;
+	pushVar(app_context, &x);
+	pushVar(app_context, &y);
+	actionLess2(app_context);
+	popVar(app_context, &r);
+	if (r.type == ACTION_STACK_VALUE_BOOLEAN) return r.data.numeric_value != 0;
+	if (r.type == ACTION_STACK_VALUE_F64) return VAL(double, &r.data.numeric_value) != 0.0;
+	if (r.type == ACTION_STACK_VALUE_F32) return VAL(float, &r.data.numeric_value) != 0.0f;
 	return 0;
 }
 
-// ContextMenu.copy() — clone a ContextMenu (or ContextMenu-shaped) instance.
-// Always sets the three instance properties (onSelect / builtInItems /
-// customItems) on the new object so that hasOwnProperty(...) returns true
-// regardless of which properties exist on the source. builtInItems is copied
-// by reference (Flash semantics — see ContextMenu.as:195-197). customItems is
-// rebuilt as a fresh Array, with elements deep-copied via
-// ContextMenuItem.copy() only when they are instanceof ContextMenuItem
-// (otherwise the slot becomes undefined; if the source customItems isn't an
-// Array at all, the result is an empty Array).
-static ActionVar builtin_contextmenu_copy(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+static ActionVar as_add(SWFAppContext* app_context, ActionVar* a, ActionVar* b) __attribute__((unused));
+static ActionVar as_add(SWFAppContext* app_context, ActionVar* a, ActionVar* b)
 {
-	(void)args; (void)arg_count; (void)registers;
-	ActionVar ret = {0};
-	ret.type = ACTION_STACK_VALUE_UNDEFINED;
-	ASObject* cm = (ASObject*)this_obj;
-	if (cm == NULL) return ret;
-
-	// Create new ContextMenu object with __proto__ from stub_ctors[4]
-	extern ASFunction g_stub_ctors[]; // forward ref
-	ASObject* new_cm = allocObject(app_context, 8);
-	retainObject(new_cm);
-	if (g_stub_ctors[4].prototype_obj != NULL) {
-		ActionVar pv = {0};
-		pv.type = ACTION_STACK_VALUE_OBJECT;
-		pv.data.numeric_value = (u64)g_stub_ctors[4].prototype_obj;
-		setProperty(app_context, new_cm, "__proto__", 9, &pv);
-	}
-
-	// onSelect: always present on copy. Use source's value if it has the
-	// property (any type), else undefined.
-	{
-		ActionVar* os_var = getProperty(cm, "onSelect", 8);
-		ActionVar v = {0};
-		v.type = ACTION_STACK_VALUE_UNDEFINED;
-		if (os_var != NULL) v = *os_var;
-		setProperty(app_context, new_cm, "onSelect", 8, &v);
-	}
-
-	// builtInItems: always present on copy. Copy the value verbatim so
-	// objects share a reference with the source (test: mutating o.g after
-	// the copy must be visible through ff.builtInItems.g).
-	{
-		ActionVar* bi_var = getProperty(cm, "builtInItems", 12);
-		ActionVar v = {0};
-		v.type = ACTION_STACK_VALUE_UNDEFINED;
-		if (bi_var != NULL) v = *bi_var;
-		setProperty(app_context, new_cm, "builtInItems", 12, &v);
-	}
-
-	// customItems: always present on copy as an Array. If the source's
-	// customItems is an Array, clone it but only deep-copy elements that
-	// are instanceof ContextMenuItem (other element types become
-	// undefined). Otherwise, fresh empty Array.
-	{
-		ActionVar* ci_var = getProperty(cm, "customItems", 11);
-		ASArray* new_ca;
-		if (ci_var != NULL && ci_var->type == ACTION_STACK_VALUE_ARRAY) {
-			ASArray* old_ca = (ASArray*)ci_var->data.numeric_value;
-			u32 cap = old_ca->length > 0 ? old_ca->length : 4;
-			new_ca = allocArray(app_context, cap);
-			new_ca->length = old_ca->length;
-			for (u32 i = 0; i < old_ca->length; i++) {
-				ActionVar e = old_ca->elements[i];
-				ActionVar copied = {0};
-				copied.type = ACTION_STACK_VALUE_UNDEFINED;
-				if (e.type == ACTION_STACK_VALUE_OBJECT && e.data.numeric_value != 0) {
-					ASObject* eo = (ASObject*)(uintptr_t)e.data.numeric_value;
-					if (isContextMenuItemInstance(eo)) {
-						copied = builtin_contextmenuitem_copy(app_context, NULL, 0, NULL, eo);
-					}
-				}
-				new_ca->elements[i] = copied;
-			}
-		} else {
-			new_ca = allocArray(app_context, 4);
-			new_ca->length = 0;
-		}
-		ActionVar cv = {0};
-		cv.type = ACTION_STACK_VALUE_ARRAY;
-		cv.data.numeric_value = (u64)new_ca;
-		setProperty(app_context, new_cm, "customItems", 11, &cv);
-	}
-
-	ret.type = ACTION_STACK_VALUE_OBJECT;
-	ret.data.numeric_value = (u64)new_cm;
-	return ret;
+	char str_buffer[17];
+	ActionVar x = *a, y = *b, r;
+	pushVar(app_context, &x);
+	pushVar(app_context, &y);
+	actionAdd2(app_context, str_buffer);
+	popVar(app_context, &r);
+	return r;
 }
 
-// ContextMenuItem.copy() — creates a copy of the menu item
-static ActionVar builtin_contextmenuitem_copy(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+static void as_set_prop_flags(SWFAppContext* app_context, ActionVar* obj, const char* names, int flags)
 {
-	(void)args; (void)arg_count; (void)registers;
-	ActionVar ret = {0};
-	ret.type = ACTION_STACK_VALUE_UNDEFINED;
-	ASObject* cmi = (ASObject*)this_obj;
-	if (cmi == NULL) return ret;
-
-	extern ASFunction g_stub_ctors[];
-	ASObject* new_cmi = allocObject(app_context, 8);
-	retainObject(new_cmi);
-	if (g_stub_ctors[5].prototype_obj != NULL) {
-		ActionVar pv = {0};
-		pv.type = ACTION_STACK_VALUE_OBJECT;
-		pv.data.numeric_value = (u64)g_stub_ctors[5].prototype_obj;
-		setProperty(app_context, new_cmi, "__proto__", 9, &pv);
-	}
-	// Copy all properties
-	const char* props[] = {"caption", "onSelect", "separatorBefore", "enabled", "visible"};
-	int lens[] = {7, 8, 15, 7, 7};
-	for (int i = 0; i < 5; i++) {
-		ActionVar* pv = getProperty(cmi, props[i], lens[i]);
-		if (pv != NULL) setProperty(app_context, new_cmi, props[i], lens[i], pv);
-	}
-	ret.type = ACTION_STACK_VALUE_OBJECT;
-	ret.data.numeric_value = (u64)new_cmi;
-	return ret;
+	ActionVar a[3];
+	a[0] = *obj;
+	if (names != NULL) a[1] = as_str(app_context, names);
+	else { a[1] = as_undef(); a[1].type = ACTION_STACK_VALUE_NULL; }
+	a[2] = as_num((double) flags);
+	(void) actionASSetPropFlags_func2(app_context, a, 3, NULL, NULL);
 }
 
-// ContextMenu.hideBuiltInItems() — sets `this.builtInItems` to a fresh object
-// whose 8 known boolean properties (save/zoom/quality/play/loop/rewind/
-// forward_back/print) are all `false`. Works on any receiver, not just real
-// ContextMenu instances (gnash test: `e = {}; e.f = ContextMenu.prototype.
-// hideBuiltInItems; e.f();` must populate `e.builtInItems`).
-static ActionVar builtin_contextmenu_hideBuiltInItems(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// Added for the flash.geom port (s22 w2-geom-port). Same conventions: each is
+// one VM op, operands pushed left then right, the op's result returned as a
+// value (NOT collapsed to a C bool where AS would pass the value through, so
+// `a < b && ...` can return the `undefined` that Less2 yields for NaN).
+//   as_sub / as_mul / as_div(app, a, b) -> a - b / a * b / a / b
+//       (ActionSubtract/Multiply/Divide: valueOf fires, version-aware ToNumber)
+//   as_lt(app, a, b)  -> a < b  as a value (ActionLess2; undefined for NaN)
+//   as_gt(app, a, b)  -> a > b  as a value (ActionGreater)
+//   as_le / as_ge(app, a, b) -> a <= b / a >= b, compiled as Flash does:
+//       !(a > b) / !(a < b) (so NaN compares TRUE)
+//   as_not(app, v)    -> !v  (ActionNot)
+//   as_truthy(app, v) -> ToBoolean(v) as a C int (version-aware, via ActionNot)
+//   as_strict_equals(app, a, b) -> a === b as a C int (ActionStrictEquals)
+//   as_instanceof(app, v, ctor) -> v instanceof ctor as a C int (ActionInstanceOf)
+static ActionVar as_binop(SWFAppContext* app_context, ActionVar* a, ActionVar* b, void (*op)(SWFAppContext*))
 {
-	(void)args; (void)arg_count; (void)registers;
-	ActionVar ret = {0};
-	ret.type = ACTION_STACK_VALUE_UNDEFINED;
-	ASObject* recv = (ASObject*)this_obj;
-	if (recv == NULL) return ret;
+	ActionVar x = *a, y = *b, r;
+	pushVar(app_context, &x);
+	pushVar(app_context, &y);
+	op(app_context);
+	popVar(app_context, &r);
+	return r;
+}
 
+static ActionVar as_sub(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { return as_binop(app_context, a, b, actionSubtract); }
+static ActionVar as_mul(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { return as_binop(app_context, a, b, actionMultiply); }
+static ActionVar as_div(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { return as_binop(app_context, a, b, actionDivide); }
+static ActionVar as_lt(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { return as_binop(app_context, a, b, actionLess2); }
+static ActionVar as_gt(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { return as_binop(app_context, a, b, actionGreater); }
+
+static ActionVar as_not(SWFAppContext* app_context, ActionVar* v)
+{
+	ActionVar x = *v, r;
+	pushVar(app_context, &x);
+	actionNot(app_context);
+	popVar(app_context, &r);
+	return r;
+}
+
+static int as_truthy(SWFAppContext* app_context, ActionVar* v)
+{
+	ActionVar r = as_not(app_context, v);
+	if (r.type == ACTION_STACK_VALUE_BOOLEAN) return r.data.numeric_value == 0;
+	if (r.type == ACTION_STACK_VALUE_F64) return VAL(double, &r.data.numeric_value) == 0.0;
+	if (r.type == ACTION_STACK_VALUE_F32) return VAL(float, &r.data.numeric_value) == 0.0f;
+	return 0;
+}
+
+static ActionVar as_le(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { ActionVar g = as_gt(app_context, a, b); return as_not(app_context, &g); }
+static ActionVar as_ge(SWFAppContext* app_context, ActionVar* a, ActionVar* b) { ActionVar l = as_lt(app_context, a, b); return as_not(app_context, &l); }
+
+static int as_strict_equals(SWFAppContext* app_context, ActionVar* a, ActionVar* b)
+{
+	ActionVar r = as_binop(app_context, a, b, actionStrictEquals);
+	return r.type == ACTION_STACK_VALUE_BOOLEAN && r.data.numeric_value != 0;
+}
+
+static int as_instanceof(SWFAppContext* app_context, ActionVar* v, ActionVar* ctor)
+{
+	ActionVar r = as_binop(app_context, v, ctor, actionInstanceOf);
+	return r.type == ACTION_STACK_VALUE_BOOLEAN && r.data.numeric_value != 0;
+}
+// ============================================================================
+// END AS-SEMANTICS HELPER LAYER
+// ============================================================================
+
+// ContextMenu / ContextMenuItem — ports of Flash's ActionScript classes
+// (Ruffle core/src/avm1/globals/ContextMenu.as, ContextMenuItem.as; upstream
+// 8885104f0, dae634d8d). Every property access and construction goes through
+// the AS-semantics helper layer, so getters/setters, a replaced global
+// ContextMenu/ContextMenuItem/Array and overridden push/copy are all observed in
+// the order the AS bytecode would observe them. The constructors run both under
+// `new` and when called as plain functions (`ContextMenuItem.call(obj, ...)`).
+
+// Receiver of a ContextMenu builtin: the object the dispatcher handed over
+// (constructors, methods, .call/.apply all pass an ASObject-shaped receiver).
+static ActionVar cmThis(void* this_obj)
+{
+	if (this_obj == NULL) return as_this(NULL);
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_OBJECT;
+	v.data.numeric_value = (u64)(uintptr_t) this_obj;
+	return v;
+}
+
+static ActionVar cmArg(ActionVar* args, u32 arg_count, u32 i)
+{
+	return (args != NULL && i < arg_count) ? args[i] : as_undef();
+}
+
+// The `{save: v, zoom: v, quality: v, play: v, loop: v, rewind: v,
+// forward_back: v, print: v}` literal. An object literal never calls the
+// global Object constructor; insertion is reversed because enumeration is LIFO.
+static ActionVar cmBuiltInItemsLiteral(SWFAppContext* app_context, int value)
+{
 	ASObject* builtin = allocObject(app_context, 10);
 	retainObject(builtin);
 	setObjectProto(app_context, builtin);
-	ActionVar bf = {0};
-	bf.type = ACTION_STACK_VALUE_BOOLEAN;
-	bf.data.numeric_value = 0;
-	// LIFO insertion → enum order: save, zoom, quality, play, loop, rewind, forward_back, print
-	setProperty(app_context, builtin, "print", 5, &bf);
-	setProperty(app_context, builtin, "forward_back", 12, &bf);
-	setProperty(app_context, builtin, "rewind", 6, &bf);
-	setProperty(app_context, builtin, "loop", 4, &bf);
-	setProperty(app_context, builtin, "play", 4, &bf);
-	setProperty(app_context, builtin, "quality", 7, &bf);
-	setProperty(app_context, builtin, "zoom", 4, &bf);
-	setProperty(app_context, builtin, "save", 4, &bf);
+	ActionVar b = as_bool(value);
+	setProperty(app_context, builtin, "print", 5, &b);
+	setProperty(app_context, builtin, "forward_back", 12, &b);
+	setProperty(app_context, builtin, "rewind", 6, &b);
+	setProperty(app_context, builtin, "loop", 4, &b);
+	setProperty(app_context, builtin, "play", 4, &b);
+	setProperty(app_context, builtin, "quality", 7, &b);
+	setProperty(app_context, builtin, "zoom", 4, &b);
+	setProperty(app_context, builtin, "save", 4, &b);
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_OBJECT;
+	v.data.numeric_value = (u64) builtin;
+	return v;
+}
 
-	ActionVar bv = {0};
-	bv.type = ACTION_STACK_VALUE_OBJECT;
-	bv.data.numeric_value = (u64)builtin;
-	setProperty(app_context, recv, "builtInItems", 12, &bv);
-	return ret;
+// function ContextMenu(callbackFunction) {
+//     this.onSelect = callbackFunction;          // not coerced, always assigned
+//     this.builtInItems = {save: true, ...};
+//     this.customItems = new Array();            // through the global Array
+// }
+static ActionVar builtin_contextmenu_ctor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = cmThis(this_obj);
+	ActionVar cb = cmArg(args, arg_count, 0);
+	as_set(app_context, &self, "onSelect", &cb);
+	ActionVar bi = cmBuiltInItemsLiteral(app_context, 1);
+	as_set(app_context, &self, "builtInItems", &bi);
+	ActionVar ci = as_new_global(app_context, "Array", NULL, 0);
+	as_set(app_context, &self, "customItems", &ci);
+	return as_undef();
+}
+
+// function ContextMenuItem(caption, callbackFunction, separatorBefore, enabled, visible) {
+//     this.caption = caption;  this.onSelect = callbackFunction;   // not coerced
+//     this.separatorBefore = separatorBefore == null ? false : separatorBefore;
+//     this.enabled = enabled == null ? true : enabled;
+//     this.visible = visible == null ? true : visible;
+// }
+static ActionVar builtin_contextmenuitem_ctor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	static const char* const names[3] = { "separatorBefore", "enabled", "visible" };
+	ActionVar self = cmThis(this_obj);
+	ActionVar v = cmArg(args, arg_count, 0);
+	as_set(app_context, &self, "caption", &v);
+	v = cmArg(args, arg_count, 1);
+	as_set(app_context, &self, "onSelect", &v);
+	for (u32 i = 0; i < 3; i++) {
+		v = cmArg(args, arg_count, 2 + i);
+		// `x == null` holds exactly for null and undefined.
+		if (v.type == ACTION_STACK_VALUE_UNDEFINED || v.type == ACTION_STACK_VALUE_NULL)
+			v = as_bool(i != 0);
+		as_set(app_context, &self, names[i], &v);
+	}
+	return as_undef();
+}
+
+// ContextMenuItem.prototype.copy:
+//     var copy = new ContextMenuItem();   // global; defaults first
+//     copy.caption = this.caption; copy.onSelect = this.onSelect;
+//     copy.separatorBefore = this.separatorBefore;
+//     copy.enabled = this.enabled; copy.visible = this.visible;
+//     return copy;
+static ActionVar builtin_contextmenuitem_copy(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	static const char* const props[5] = { "caption", "onSelect", "separatorBefore", "enabled", "visible" };
+	ActionVar self = cmThis(this_obj);
+	ActionVar copy = as_new_global(app_context, "ContextMenuItem", NULL, 0);
+	for (u32 i = 0; i < 5; i++) {
+		ActionVar v = as_get(app_context, &self, props[i]);
+		as_set(app_context, &copy, props[i], &v);
+	}
+	return copy;
+}
+
+// ContextMenu.prototype.copy:
+//     var copy = new ContextMenu();                 // global
+//     copy.onSelect = this.onSelect;
+//     copy.builtInItems = this.builtInItems;        // shared, not copied
+//     copy.customItems = new Array();               // global
+//     for (var i = 0; i < this.customItems.length; i++)
+//         copy.customItems.push(this.customItems[i].copy());
+//     return copy;
+static ActionVar builtin_contextmenu_copy(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = cmThis(this_obj);
+	ActionVar copy = as_new_global(app_context, "ContextMenu", NULL, 0);
+	ActionVar v = as_get(app_context, &self, "onSelect");
+	as_set(app_context, &copy, "onSelect", &v);
+	v = as_get(app_context, &self, "builtInItems");
+	as_set(app_context, &copy, "builtInItems", &v);
+	v = as_new_global(app_context, "Array", NULL, 0);
+	as_set(app_context, &copy, "customItems", &v);
+	for (u32 i = 0; ; i++) {
+		ActionVar iv = as_num((double) i);
+		ActionVar items = as_get(app_context, &self, "customItems");
+		ActionVar len = as_get(app_context, &items, "length");
+		if (!as_less(app_context, &iv, &len)) break;
+		// Argument first (this.customItems[i].copy()), then the receiver
+		// (copy.customItems), then the push — bytecode evaluation order.
+		items = as_get(app_context, &self, "customItems");
+		ActionVar item = as_get_index(app_context, &items, i);
+		ActionVar item_copy = as_call_method(app_context, &item, "copy", NULL, 0);
+		ActionVar dst = as_get(app_context, &copy, "customItems");
+		(void) as_call_method(app_context, &dst, "push", &item_copy, 1);
+	}
+	return copy;
+}
+
+// ContextMenu.prototype.hideBuiltInItems: `this.builtInItems = {save: false,
+// ...}` — replaced, not modified, so other references keep the old object.
+// Works on any receiver (gnash: `e = {}; e.f = ContextMenu.prototype.
+// hideBuiltInItems; e.f();`).
+static ActionVar builtin_contextmenu_hideBuiltInItems(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = cmThis(this_obj);
+	ActionVar bi = cmBuiltInItemsLiteral(app_context, 0);
+	as_set(app_context, &self, "builtInItems", &bi);
+	return as_undef();
 }
 
 static ActionVar builtin_return_zero(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
@@ -4559,12 +4943,23 @@ static void addStubMethodToProto(SWFAppContext* app_context, ASObject* proto, co
 static int isNativeTextFieldProperty(const char* name, u32 len); // forward decl
 
 // Built-in hasOwnProperty checks if a property exists directly on the object
+static int callArrayMethod(SWFAppContext* app_context, ASArray* arr, const char* method_name, u32 method_name_len, ActionVar* args, u32 num_args);
 static ActionVar builtin_object_hasOwnProperty(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	ActionVar ret;
 	ret.type = ACTION_STACK_VALUE_BOOLEAN;
 	ret.str_size = 0;
 	ret.data.numeric_value = 0; // false by default
+
+	// hasOwnProperty.call(array, name): this_obj is an ASArray*, not an
+	// ASObject* — route to the array-aware implementation instead of
+	// mis-casting it (segfault in findPropertySlot).
+	if (this_obj != NULL && g_call_this_type == ACTION_STACK_VALUE_ARRAY)
+	{
+		if (callArrayMethod(app_context, (ASArray*) this_obj, "hasOwnProperty", 14, args, args ? arg_count : 0))
+			popVar(app_context, &ret);
+		return ret;
+	}
 
 	if (this_obj != NULL && args != NULL && arg_count >= 1)
 	{
@@ -5066,10 +5461,11 @@ static ASObject* g_rect_prototype = NULL;
 static ASFunction g_point_methods[7];   // toString, add, subtract, equals, clone, offset, normalize
 static ASFunction g_point_statics[3];   // distance, interpolate, polar
 static ASFunction g_point_length_getter; // length virtual property
+static ASFunction g_point_length_setter; // its no-op setter
 static ASFunction g_matrix_methods[12]; // toString, clone, identity, scale, rotate, translate, concat, invert, createBox, createGradientBox, transformPoint, deltaTransformPoint
 static ASFunction g_rect_methods[15];   // toString, clone, equals, isEmpty, setEmpty, contains, containsPoint, containsRectangle, inflate, inflatePoint, intersection, intersects, offset, offsetPoint, union
 static ASFunction g_rect_virt_getters[7]; // left, right, top, bottom, topLeft, bottomRight, size
-static ASFunction g_rect_virt_setters[2]; // left, top
+static ASFunction g_rect_virt_setters[7]; // same order as the getters
 static int g_geom_init_done = 0;
 
 // ============================================================================
@@ -5304,6 +5700,35 @@ static ActionVar builtin_trace_func2(SWFAppContext* app_context, ActionVar* args
 	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
 }
 
+// AsSetupError(names) — port of Flash's ActionScript (Ruffle Error.as, 31223a80a):
+//     var namesArray = names.split(",");          // dispatched through `names`
+//     for (var i = 0; i < namesArray.length; i++) {
+//         var name = namesArray[i];
+//         var errorProto = new Error();
+//         errorProto.name = name;                  // name before message
+//         errorProto.message = name;
+//     }
+// `Error` is resolved through the CALLER's scope chain on every iteration:
+// Flash finds `_root.Error` before `_global.Error` (Ruffle, whose AS body only
+// sees the global scope, misses that one row). Returns undefined.
+static ActionVar builtin_as_setup_error(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers; (void)this_obj;
+	ActionVar names = (arg_count >= 1) ? args[0] : as_undef();
+	ActionVar comma = as_str(app_context, ",");
+	ActionVar names_array = as_call_method(app_context, &names, "split", &comma, 1);
+	for (u32 i = 0; ; i++) {
+		ActionVar iv = as_num((double) i);
+		ActionVar len = as_get(app_context, &names_array, "length");
+		if (!as_less(app_context, &iv, &len)) break;
+		ActionVar name = as_get_index(app_context, &names_array, i);
+		ActionVar error_proto = as_new_scoped(app_context, "Error", NULL, 0);
+		as_set(app_context, &error_proto, "name", &name);
+		as_set(app_context, &error_proto, "message", &name);
+	}
+	return as_undef();
+}
+
 // All missing global function stubs
 static ASFunction g_escape_func;
 static ASFunction g_unescape_func;
@@ -5348,7 +5773,7 @@ static void init_global_funcs(void)
 		{&g_ASSetNativeAccessor_func, "ASSetNativeAccessor", (Function2Ptr)builtin_assetnativeaccessor},
 		{&g_remoteLSOUsage_ctor, "RemoteLSOUsage", (Function2Ptr)builtin_noop_func},
 		{&g_assetCache_ctor, "AssetCache", (Function2Ptr)builtin_noop_func},
-		{&g_asSetupError_ctor, "AsSetupError", (Function2Ptr)builtin_noop_func},
+		{&g_asSetupError_ctor, "AsSetupError", (Function2Ptr)builtin_as_setup_error},
 	};
 	for (int i = 0; i < (int)(sizeof(entries)/sizeof(entries[0])); i++) {
 		memset(entries[i].func, 0, sizeof(ASFunction));
@@ -5356,10 +5781,10 @@ static void init_global_funcs(void)
 		entries[i].func->function_type = 2;
 		entries[i].func->advanced_func = entries[i].impl;
 	}
-	// RemoteLSOUsage, AssetCache, AsSetupError are constructors (type 1)
+	// RemoteLSOUsage, AssetCache are constructors (type 1). AsSetupError keeps
+	// type 2 so its (ported) body runs when called.
 	g_remoteLSOUsage_ctor.function_type = 1;
 	g_assetCache_ctor.function_type = 1;
-	g_asSetupError_ctor.function_type = 1;
 	g_global_funcs_init = 1;
 }
 
@@ -7340,6 +7765,28 @@ static ActionVar funcPrototypeVar(ASFunction* func)
 
 // ASnative(class_id, method_index) — returns a native method by numeric address.
 // Handles class 2 (ASNew), class 101 (Object.prototype), class 100 (global functions), class 200 (Math), class 252 (Array).
+static ActionVar builtin_broadcaster_broadcastMessage_as(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj);
+
+// A fresh native broadcastMessage function object: ASnative(101, 12). Flash
+// hands out a new function object on every ASnative call, and
+// AsBroadcaster.initialize installs a new one on each broadcaster, so
+// `b.broadcastMessage === AsBroadcaster.broadcastMessage` is false.
+static ActionVar newBroadcastMessageFunc(SWFAppContext* app_context)
+{
+	ActionVar v = {0};
+	v.type = ACTION_STACK_VALUE_UNDEFINED;
+	ASFunction* fn = (ASFunction*) calloc(1, sizeof(ASFunction));
+	if (fn == NULL) return v;
+	actionGcLinkFunction(fn);
+	strncpy(fn->name, "broadcastMessage", 255);
+	fn->function_type = 2;
+	fn->advanced_func = (Function2Ptr) builtin_broadcaster_broadcastMessage_as;
+	setupNativeFuncOwnProps(app_context, fn);
+	v.type = ACTION_STACK_VALUE_FUNCTION;
+	v.data.numeric_value = (u64)(uintptr_t) fn;
+	return v;
+}
+
 static ActionVar builtin_asnative(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers; (void)this_obj;
@@ -7436,6 +7883,8 @@ static ActionVar builtin_asnative(SWFAppContext* app_context, ActionVar* args, u
 			&g_object_isPropertyEnumerable_func, // 6
 			&g_object_isPrototypeOf_func,        // 7
 		};
+		if (method_index == 12)
+			return newBroadcastMessageFunc(app_context);  // AsBroadcaster's native core
 		if (method_index <= 7) {
 			ASFunction* fn = obj_methods[method_index];
 			if (fn->advanced_func != NULL || fn->simple_func != NULL) {
@@ -8432,6 +8881,9 @@ static void ensureBuiltinPrototypeProps(SWFAppContext* app_context, ASObject* pr
 	fixBuiltinPrototypeFlags(proto);
 }
 
+static void arrayResolveGlobalCtor(SWFAppContext* app_context, ASArray* arr,
+                                   ASObject* default_proto, u32 proto_flags);
+
 // Set up arguments object properties: __proto__ = Array.prototype, callee, caller.
 // Called after creating the arguments ASArray for any user-defined function call.
 static void setupArgumentsProps(SWFAppContext* app_context, ASArray* arr,
@@ -8467,6 +8919,7 @@ static void setupArgumentsProps(SWFAppContext* app_context, ASArray* arr,
 		pv.type = ACTION_STACK_VALUE_OBJECT;
 		pv.data.numeric_value = (u64)g_array_prototype;
 		setPropertyWithFlags(app_context, arr->props, "__proto__", 9, &pv, _ARGS_HIDDEN);
+		arrayResolveGlobalCtor(app_context, arr, g_array_prototype, _ARGS_HIDDEN);
 	}
 
 	// callee = the function being called (non-enumerable)
@@ -10090,17 +10543,6 @@ static double propToDouble(ASObject* obj, const char* name, u32 name_len)
 	return varToDoubleSimple(prop);
 }
 
-// Like propToDouble but dispatches user-defined valueOf on OBJECT/ARRAY
-// values via varToDoubleSWF. Use in geometry builtins (Rectangle, Matrix)
-// where the caller's x/y/width/height may be an object with a custom
-// valueOf. Missing property still returns NAN.
-static double propToDoubleSWF(SWFAppContext* app_context, ASObject* obj, const char* name, u32 name_len)
-{
-	ActionVar* prop = getPropertyWithPrototype(obj, name, name_len);
-	if (prop == NULL) return NAN;
-	return varToDoubleSWF(app_context, prop, g_swf_version);
-}
-
 // Helper: create a Point object with x and y properties
 static ASObject* createPointObj(SWFAppContext* app_context, ActionVar* x_val, ActionVar* y_val)
 {
@@ -10112,17 +10554,6 @@ static ASObject* createPointObj(SWFAppContext* app_context, ActionVar* x_val, Ac
 	if (x_val) setProperty(app_context, obj, "x", 1, x_val);
 	if (y_val) setProperty(app_context, obj, "y", 1, y_val);
 	return obj;
-}
-
-// Helper: create a Point object from two doubles
-static ASObject* createPointObjF64(SWFAppContext* app_context, double x, double y)
-{
-	ActionVar xv = {0}, yv = {0};
-	xv.type = ACTION_STACK_VALUE_F64;
-	VAL(double, &xv.data.numeric_value) = x;
-	yv.type = ACTION_STACK_VALUE_F64;
-	VAL(double, &yv.data.numeric_value) = y;
-	return createPointObj(app_context, &xv, &yv);
 }
 
 // Helper: create a Rectangle object with x, y, width, height properties
@@ -10181,104 +10612,11 @@ static void registerProtoMethod(ASFunction* func, const char* name, Function2Ptr
 	setProperty(app_context, proto, name, (u32)strlen(name), &fv);
 }
 
-// --- Point methods ---
-
-static ActionVar pointConstructor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) {
-		// Bare Point() call without new — act as factory function
-		initGeomPrototypes(app_context);
-		ActionVar x_val = (arg_count >= 1) ? args[0] : makeF64(0.0);
-		ActionVar y_val = (arg_count >= 2) ? args[1] : makeF64(0.0);
-		ASObject* pt = createPointObj(app_context, &x_val, &y_val);
-		ActionVar r = {0}; r.type = ACTION_STACK_VALUE_OBJECT;
-		r.data.numeric_value = (u64) pt;
-		return r;
-	}
-
-	if (arg_count == 0) {
-		ActionVar zero = makeF64(0.0);
-		setProperty(app_context, obj, "x", 1, &zero);
-		setProperty(app_context, obj, "y", 1, &zero);
-	} else if (arg_count == 1) {
-		setProperty(app_context, obj, "x", 1, &args[0]);
-		ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED;
-		setProperty(app_context, obj, "y", 1, &undef);
-	} else {
-		setProperty(app_context, obj, "x", 1, &args[0]);
-		setProperty(app_context, obj, "y", 1, &args[1]);
-	}
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-}
-
-static ActionVar pointToString(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	char buf[512];
-	char xbuf[128], ybuf[128];
-	// SWF<7 renders undefined as "", SWF>=7 as "undefined". Missing
-	// property reads as undefined in ECMA.
-	#define _PT_TOSTR_FIELD(name, nlen, out) do { \
-		ActionVar* _v = obj ? getProperty(obj, (name), (nlen)) : NULL; \
-		if (_v == NULL || _v->type == ACTION_STACK_VALUE_UNDEFINED) { \
-			if (g_swf_version >= 7) snprintf((out), sizeof(out), "undefined"); \
-			else (out)[0] = '\0'; \
-		} else { \
-			varToStringBufFull(app_context, _v, (out), sizeof(out)); \
-		} \
-	} while (0)
-	_PT_TOSTR_FIELD("x", 1, xbuf);
-	_PT_TOSTR_FIELD("y", 1, ybuf);
-	#undef _PT_TOSTR_FIELD
-	int len = snprintf(buf, sizeof(buf), "(x=%s, y=%s)", xbuf, ybuf);
-
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_STRING;
-	u32 u16_len;
-	uint16_t* u16 = ascii_to_u16(app_context, buf, len, &u16_len);
-	r.str_size = u16_len;
-	r.data.string_data.heap_ptr = u16;
-	r.data.string_data.owns_memory = true;
-	return r;
-}
-
-// ECMAScript-style '+' on two ActionVars — if either operand is a STRING,
-// concatenate as strings; otherwise numeric add. Used by Point.add so tests
-// that pass non-numeric x/y see Flash-compatible string-concat behavior.
-// Caller must initialize `out` to zero.
-static void avAdditionEcma(SWFAppContext* app_context, ActionVar* a, ActionVar* b, ActionVar* out)
-{
-	int a_is_str = (a != NULL && a->type == ACTION_STACK_VALUE_STRING);
-	int b_is_str = (b != NULL && b->type == ACTION_STACK_VALUE_STRING);
-	if (a_is_str || b_is_str) {
-		char abuf[256], bbuf[256];
-		varToStringBufFull(app_context, a, abuf, sizeof(abuf));
-		varToStringBufFull(app_context, b, bbuf, sizeof(bbuf));
-		char combined[512];
-		int len = snprintf(combined, sizeof(combined), "%s%s", abuf, bbuf);
-		u32 u16_len;
-		uint16_t* u16 = ascii_to_u16(app_context, combined, len, &u16_len);
-		out->type = ACTION_STACK_VALUE_STRING;
-		out->str_size = u16_len;
-		out->data.string_data.heap_ptr = u16;
-		out->data.string_data.owns_memory = true;
-		return;
-	}
-	double av = a ? varToDoubleSimple(a) : NAN;
-	double bv = b ? varToDoubleSimple(b) : NAN;
-	*out = makeF64(av + bv);
-}
-
 extern ASObject* global_object;
 
 // Lookup the wrapper prototype (String.prototype/Number.prototype/Boolean.prototype)
-// for a primitive ActionVar type, via _global's ctor binding. Used by Point.add
-// to auto-box primitive args so `.x`/`.y` lookups dispatch through the wrapper's
-// prototype (Gnash tests `String.prototype.x = 3; p.add('1')`).
+// for a primitive ActionVar type, via _global's ctor binding. Used to auto-box
+// primitive receivers so property lookups dispatch through the wrapper's prototype.
 static ASObject* getPrimitiveWrapperProto(u8 type)
 {
 	const char* name = NULL; u32 nlen = 0;
@@ -10296,693 +10634,614 @@ static ASObject* getPrimitiveWrapperProto(u8 type)
 	return cf ? cf->prototype_obj : NULL;
 }
 
-static ActionVar pointAdd(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// --- flash.geom Point / Matrix / Rectangle: ports of Flash's ActionScript ---
+//
+// Flash implements these three classes in ActionScript bytecode (Ruffle:
+// core/src/avm1/globals/flash/geom/{Point,Rectangle,Matrix}.as, upstream
+// 82b84d3e5 / c717e9dc8 / ee9791463). Every property get/set, every operator
+// (`+` concatenates strings, `<=` is true for NaN, `&&` passes values through),
+// every internal dispatch (`this.isEmpty()`, `pt1.subtract(pt2)`,
+// `Math.sin`) and every construction (`new flash.geom.Point(x, y)`) is
+// observable through getters/setters, valueOf and overrides, so each method
+// below performs exactly the bytecode's steps, in its order, through the
+// AS-semantics helper layer. The comments name the AS statement each block
+// implements. Arithmetic runs in the CALLER's SWF version (gnash Matrix-v6:
+// `toString()` of undefined members is "" in SWF6), which the VM ops do.
+//
+// Native construction sites (transform.matrix, getBounds, BitmapData.rectangle,
+// ...) still build instances directly on g_point/g_matrix/g_rect_prototype
+// (createPointObj / makeMatrixObject / createRectObj), so these methods apply
+// to them without paying for a script-level constructor call.
+
+#define GM_ARG(i) ((i) < arg_count ? args[(i)] : as_undef())
+
+// `flash.geom.<name>` as the class bodies resolve it (their scope is the
+// global; the `flash` package is visible to that code in every SWF version,
+// so it is read raw, bypassing the SWF8 visibility gate). The class itself is
+// re-read on every use, so a replaced flash.geom.Point is honoured.
+static ActionVar geomClass(SWFAppContext* app_context, const char* name)
+{
+	ActionVar r = as_undef();
+	ASObject* g = getActiveGlobal();
+	ActionVar* fv = g ? getProperty(g, "flash", 5) : NULL;
+	if (fv == NULL || fv->type != ACTION_STACK_VALUE_OBJECT || fv->data.numeric_value == 0) return r;
+	ActionVar* gv = getProperty((ASObject*)(uintptr_t) fv->data.numeric_value, "geom", 4);
+	if (gv == NULL || gv->type != ACTION_STACK_VALUE_OBJECT || gv->data.numeric_value == 0) return r;
+	ActionVar* cv = getProperty((ASObject*)(uintptr_t) gv->data.numeric_value, name, (u32) strlen(name));
+	if (cv == NULL) return r;
+	(void) app_context;
+	return *cv;
+}
+
+// new flash.geom.<name>(args...)
+static ActionVar geomNew(SWFAppContext* app_context, const char* name, ActionVar* args, u32 n)
+{
+	ActionVar cls = geomClass(app_context, name);
+	return as_new_value(app_context, &cls, args, n);
+}
+
+// Math.<fn>(a[, b]) — `Math` resolved from the global, as the class bodies do.
+static ActionVar geomMath(SWFAppContext* app_context, const char* fn, ActionVar* args, u32 n)
+{
+	ActionVar math = as_get_global(app_context, "Math");
+	return as_call_method(app_context, &math, fn, args, n);
+}
+
+// this.<name> op= v
+static void geomCompound(SWFAppContext* app_context, ActionVar* self, const char* name, ActionVar* v,
+                         ActionVar (*op)(SWFAppContext*, ActionVar*, ActionVar*))
+{
+	ActionVar cur = as_get(app_context, self, name);
+	ActionVar nv = op(app_context, &cur, v);
+	as_set(app_context, self, name, &nv);
+}
+
+// o.a + o.b
+static ActionVar geomSum(SWFAppContext* app_context, ActionVar* o, const char* a, const char* b)
+{
+	ActionVar va = as_get(app_context, o, a);
+	ActionVar vb = as_get(app_context, o, b);
+	return as_add(app_context, &va, &vb);
+}
+
+// "lit" + v, then + "lit" ... : appends `lit` (a C string) to acc
+static ActionVar geomCat(SWFAppContext* app_context, ActionVar* acc, const char* lit)
+{
+	ActionVar s = as_key(app_context, lit);
+	return as_add(app_context, acc, &s);
+}
+
+// Shared toString: "(" + k0 + "=" + this.f0 + ", " + k1 + "=" + ... + ")"
+// The literal pieces are joined at compile time, so the observable sequence is
+// lit0 + this.f0 + lit1 + this.f1 + ... + ")".
+static ActionVar geomToString(SWFAppContext* app_context, void* this_obj, const char* const* lits, const char* const* fields, int n)
+{
+	ActionVar self = as_this(this_obj);
+	ActionVar acc = as_key(app_context, lits[0]);
+	for (int i = 0; i < n; i++)
+	{
+		ActionVar f = as_get(app_context, &self, fields[i]);
+		acc = as_add(app_context, &acc, &f);
+		acc = geomCat(app_context, &acc, lits[i + 1]);
+	}
+	return acc;
+}
+
+// The receiver of an addProperty accessor (Point.length, the Rectangle edge
+// properties). Accessors are invoked through invokePropertyGetter/Setter,
+// which never set g_call_this_type, so a stale ARRAY tag (it is held across
+// an array native's callbacks, e.g. a sort comparator that reads r.right)
+// must not reinterpret the receiver: a non-NULL this_obj is an object here.
+static ActionVar geomAccessorThis(void* this_obj)
+{
+	if (this_obj == NULL) return as_this(NULL);
+	ActionVar v = as_undef();
+	v.type = ACTION_STACK_VALUE_OBJECT;
+	v.data.numeric_value = (u64)(uintptr_t) this_obj;
+	return v;
+}
+
+// --- Point ---
+
+// flash.geom.Point = function(x, y)
+static ActionVar pointConstructor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar* tx = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* ty = obj ? getProperty(obj, "y", 1) : NULL;
-
-	ActionVar* ox = NULL;
-	ActionVar* oy = NULL;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		ox = getPropertyWithPrototype(pt, "x", 1);
-		oy = getPropertyWithPrototype(pt, "y", 1);
-	} else if (arg_count > 0) {
-		// Primitive arg (string/number/boolean): look up .x/.y via the wrapper
-		// prototype. Gnash: `String.prototype.x = 3; p.add('1')` → x picks up 3.
-		ASObject* wrapper_proto = getPrimitiveWrapperProto(args[0].type);
-		if (wrapper_proto != NULL) {
-			ox = getPropertyWithPrototype(wrapper_proto, "x", 1);
-			oy = getPropertyWithPrototype(wrapper_proto, "y", 1);
-		}
+	if (this_obj == NULL) {
+		// Bare call with no receiver at all: keep the historical factory behaviour.
+		initGeomPrototypes(app_context);
+		ActionVar x_val = (arg_count >= 1) ? args[0] : makeF64(0.0);
+		ActionVar y_val = (arg_count >= 2) ? args[1] : makeF64(0.0);
+		ASObject* pt = createPointObj(app_context, &x_val, &y_val);
+		ActionVar r = {0}; r.type = ACTION_STACK_VALUE_OBJECT;
+		r.data.numeric_value = (u64) pt;
+		return r;
 	}
-	// Missing or non-object arg → other.x/y are undefined (not missing),
-	// so `this.x + undefined` string-concats to "xundefined" per Gnash tests.
-	ActionVar undef_pa = {0}; undef_pa.type = ACTION_STACK_VALUE_UNDEFINED;
-	if (ox == NULL) ox = &undef_pa;
-	if (oy == NULL) oy = &undef_pa;
-
-	ActionVar nx = {0}, ny = {0};
-	avAdditionEcma(app_context, tx, ox, &nx);
-	avAdditionEcma(app_context, ty, oy, &ny);
-	ASObject* result = createPointObj(app_context, &nx, &ny);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar self = as_this(this_obj);
+	if (arg_count == 0) {
+		// y is assigned before x (enumeration order).
+		ActionVar zero = as_num(0);
+		as_set(app_context, &self, "y", &zero);
+		as_set(app_context, &self, "x", &zero);
+		return as_undef();
+	}
+	ActionVar x = GM_ARG(0), y = GM_ARG(1);
+	as_set(app_context, &self, "x", &x);
+	as_set(app_context, &self, "y", &y);
+	return as_undef();
 }
 
-static ActionVar pointSubtract(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// Point.distance = function(pt1, pt2) { return pt1.subtract(pt2).length; }
+static ActionVar pointDistance(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar* tx = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* ty = obj ? getProperty(obj, "y", 1) : NULL;
-	double sx = varToDoubleSimple(tx), sy = varToDoubleSimple(ty);
-
-	// Read pt.x and pt.y from argument — non-object → NaN
-	double ox = NAN, oy = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		ox = propToDouble(pt, "x", 1);
-		oy = propToDouble(pt, "y", 1);
-	}
-
-	ASObject* result = createPointObjF64(app_context, sx - ox, sy - oy);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	(void)registers; (void)this_obj;
+	ActionVar pt1 = GM_ARG(0), pt2 = GM_ARG(1);
+	ActionVar diff = as_call_method(app_context, &pt1, "subtract", &pt2, 1);
+	return as_get(app_context, &diff, "length");
 }
 
-static int objIsPointInstance(ASObject* obj);
-
-// Strict equality between two ActionVars (same type + same value).
-// Used by Point.equals — reflexive (NaN==NaN for strict equality on same
-// var is true), matches Gnash's Point.prototype.equals which delegates to
-// ECMAScript strict equality.
-static int avStrictEquals(ActionVar* a, ActionVar* b)
+// Point.polar = function(len, angle): y (Math.sin) before x (Math.cos)
+static ActionVar pointPolar(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	if (a == NULL && b == NULL) return 1;
-	if (a == NULL || b == NULL) return 0;
-	if (a->type != b->type) return 0;
-	if (a->type == ACTION_STACK_VALUE_STRING) {
-		if (a->str_size != b->str_size) return 0;
-		const uint16_t* as = varGetU16Ptr(a);
-		const uint16_t* bs = varGetU16Ptr(b);
-		if (a->str_size == 0) return 1;
-		if (as == NULL || bs == NULL) return as == bs;
-		return memcmp(as, bs, a->str_size * sizeof(uint16_t)) == 0;
-	}
-	if (a->type == ACTION_STACK_VALUE_F64 || a->type == ACTION_STACK_VALUE_F32) {
-		double av = (a->type == ACTION_STACK_VALUE_F64)
-			? VAL(double, &a->data.numeric_value)
-			: (double)VAL(float, &a->data.numeric_value);
-		double bv = (b->type == ACTION_STACK_VALUE_F64)
-			? VAL(double, &b->data.numeric_value)
-			: (double)VAL(float, &b->data.numeric_value);
-		return av == bv;
-	}
-	return a->data.numeric_value == b->data.numeric_value;
+	(void)registers; (void)this_obj;
+	ActionVar len = GM_ARG(0), angle = GM_ARG(1);
+	ActionVar s = geomMath(app_context, "sin", &angle, 1);
+	ActionVar y = as_mul(app_context, &len, &s);
+	ActionVar c = geomMath(app_context, "cos", &angle, 1);
+	ActionVar x = as_mul(app_context, &len, &c);
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
 }
 
-static ActionVar pointEquals(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// pt2.<k> + (pt1.<k> - pt2.<k>) * f
+static ActionVar pointLerp(SWFAppContext* app_context, ActionVar* pt1, ActionVar* pt2, ActionVar* f, const char* k)
 {
-	(void)app_context; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = 0;
-	if (obj == NULL || arg_count == 0) return r;
-
-	ActionVar* tx = getProperty(obj, "x", 1);
-	ActionVar* ty = getProperty(obj, "y", 1);
-
-	if (args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		// Gnash: equals requires the arg to be a Point instance (walks __proto__
-		// chain). Non-Point objects always compare false, even if x/y match.
-		if (objIsPointInstance(pt)) {
-			ActionVar* px = getProperty(pt, "x", 1);
-			ActionVar* py = getProperty(pt, "y", 1);
-			if (avStrictEquals(tx, px) && avStrictEquals(ty, py))
-				r.data.numeric_value = 1;
-		}
-	}
-	return r;
+	ActionVar b = as_get(app_context, pt2, k);
+	ActionVar a1 = as_get(app_context, pt1, k);
+	ActionVar b1 = as_get(app_context, pt2, k);
+	ActionVar d = as_sub(app_context, &a1, &b1);
+	ActionVar m = as_mul(app_context, &d, f);
+	return as_add(app_context, &b, &m);
 }
 
-// Point.prototype.length getter — sqrt(x*x + y*y)
+// Point.interpolate = function(pt1, pt2, f): y before x
+static ActionVar pointInterpolate(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers; (void)this_obj;
+	ActionVar pt1 = GM_ARG(0), pt2 = GM_ARG(1), f = GM_ARG(2);
+	ActionVar y = pointLerp(app_context, &pt1, &pt2, &f, "y");
+	ActionVar x = pointLerp(app_context, &pt1, &pt2, &f, "x");
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
+}
+
+// get length: Math.sqrt(this.x * this.x + this.y * this.y), recomputed per read
 static ActionVar pointLengthGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	(void)app_context; (void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	ActionVar* xv = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* yv = obj ? getProperty(obj, "y", 1) : NULL;
-	double x = xv ? varToDoubleSimple(xv) : NAN;
-	double y = yv ? varToDoubleSimple(yv) : NAN;
-	return makeF64(sqrt(x * x + y * y));
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar x1 = as_get(app_context, &self, "x"), x2 = as_get(app_context, &self, "x");
+	ActionVar xx = as_mul(app_context, &x1, &x2);
+	ActionVar y1 = as_get(app_context, &self, "y"), y2 = as_get(app_context, &self, "y");
+	ActionVar yy = as_mul(app_context, &y1, &y2);
+	ActionVar sum = as_add(app_context, &xx, &yy);
+	return geomMath(app_context, "sqrt", &sum, 1);
+}
+
+// set length: no-op (read-only)
+static ActionVar geomNoopSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)app_context; (void)args; (void)arg_count; (void)registers; (void)this_obj;
+	return as_undef();
 }
 
 static ActionVar pointClone(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar* xv = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* yv = obj ? getProperty(obj, "y", 1) : NULL;
-	ASObject* result = createPointObj(app_context, xv, yv);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar y = as_get(app_context, &self, "y");
+	ActionVar x = as_get(app_context, &self, "x");
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
 }
 
+// offset(dx, dy): this.x += dx; this.y += dy;
 static ActionVar pointOffset(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	ActionVar* xv = getProperty(obj, "x", 1);
-	ActionVar* yv = getProperty(obj, "y", 1);
-	// Use abstract `+` semantics so non-numeric x/y get string-concatenated
-	// (matches Gnash/Flash behavior for string-typed Point coordinates).
-	// Missing args are treated as undefined; avAdditionEcma produces a string
-	// "xundefined" when x is a string and arg is undefined.
-	ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED;
-	ActionVar* dx_v = (arg_count > 0) ? &args[0] : &undef;
-	ActionVar* dy_v = (arg_count > 1) ? &args[1] : &undef;
-	ActionVar nxv = {0}, nyv = {0};
-	avAdditionEcma(app_context, xv, dx_v, &nxv);
-	avAdditionEcma(app_context, yv, dy_v, &nyv);
-	setProperty(app_context, obj, "x", 1, &nxv);
-	setProperty(app_context, obj, "y", 1, &nyv);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar dx = GM_ARG(0), dy = GM_ARG(1);
+	geomCompound(app_context, &self, "x", &dx, as_add);
+	geomCompound(app_context, &self, "y", &dy, as_add);
+	return as_undef();
 }
 
+// a.<k> == this.<k>, as a value
+static ActionVar geomFieldEq(SWFAppContext* app_context, ActionVar* other, ActionVar* self, const char* k)
+{
+	ActionVar a = as_get(app_context, other, k);
+	ActionVar b = as_get(app_context, self, k);
+	return as_bool(as_equals(app_context, &a, &b));
+}
+
+// equals(toCompare): toCompare instanceof flash.geom.<cls> && toCompare.f == this.f && ...
+static ActionVar geomEquals(SWFAppContext* app_context, void* this_obj, ActionVar* other, const char* cls, const char* const* fields, int n)
+{
+	ActionVar self = as_this(this_obj);
+	ActionVar ctor = geomClass(app_context, cls);
+	ActionVar r = as_bool(as_instanceof(app_context, other, &ctor));
+	for (int i = 0; i < n && as_truthy(app_context, &r); i++)
+		r = geomFieldEq(app_context, other, &self, fields[i]);
+	return r;
+}
+
+static ActionVar pointEquals(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	static const char* const f[] = { "x", "y" };
+	ActionVar o = GM_ARG(0);
+	return geomEquals(app_context, this_obj, &o, "Point", f, 2);
+}
+
+// subtract/add(v): y = this.y op v.y; x = this.x op v.x; new Point(x, y)
+static ActionVar pointBinary(SWFAppContext* app_context, void* this_obj, ActionVar* v,
+                             ActionVar (*op)(SWFAppContext*, ActionVar*, ActionVar*))
+{
+	ActionVar self = as_this(this_obj);
+	ActionVar ty = as_get(app_context, &self, "y"), vy = as_get(app_context, v, "y");
+	ActionVar y = op(app_context, &ty, &vy);
+	ActionVar tx = as_get(app_context, &self, "x"), vx = as_get(app_context, v, "x");
+	ActionVar x = op(app_context, &tx, &vx);
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
+}
+
+static ActionVar pointSubtract(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar v = GM_ARG(0);
+	return pointBinary(app_context, this_obj, &v, as_sub);
+}
+
+static ActionVar pointAdd(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar v = GM_ARG(0);
+	return pointBinary(app_context, this_obj, &v, as_add);
+}
+
+// normalize(length)
 static ActionVar pointNormalize(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	ActionVar* xv = getProperty(obj, "x", 1);
-	ActionVar* yv = getProperty(obj, "y", 1);
-
-	// If x is undefined or y is null/undefined, special handling per Flash behavior
-	int x_is_non_numeric = (xv == NULL || xv->type == ACTION_STACK_VALUE_UNDEFINED ||
-	                         xv->type == ACTION_STACK_VALUE_OBJECT);
-	int y_is_null = (yv != NULL && yv->type == ACTION_STACK_VALUE_NULL);
-
-	if (x_is_non_numeric || y_is_null) {
-		// Can't normalize — set x/y to NaN if thickness is provided, else leave as-is
-		if (arg_count == 0) {
-			// normalize() with no thickness — set both to NaN only if non-special
-			if (!x_is_non_numeric) {
-				ActionVar nanv = makeF64(NAN);
-				setProperty(app_context, obj, "x", 1, &nanv);
-			}
-			if (!y_is_null) {
-				ActionVar nanv = makeF64(NAN);
-				setProperty(app_context, obj, "y", 1, &nanv);
-			}
-		}
-		// With thickness but non-numeric x or null y — leave unchanged
-		ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-	}
-
-	double sx = varToDoubleSimple(xv);
-	double sy = varToDoubleSimple(yv);
-	double thickness = (arg_count > 0) ? varToDoubleSimple(&args[0]) : NAN;
-	double length = sqrt(sx * sx + sy * sy);
-
-	if (length > 0) {
-		double scale = thickness / length;
-		ActionVar nxv = makeF64(sx * scale);
-		ActionVar nyv = makeF64(sy * scale);
-		setProperty(app_context, obj, "x", 1, &nxv);
-		setProperty(app_context, obj, "y", 1, &nyv);
-	}
-	// length == 0: no change
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar length = GM_ARG(0);
+	ActionVar cur = as_get(app_context, &self, "length");
+	ActionVar zero = as_num(0);
+	ActionVar le = as_le(app_context, &cur, &zero);
+	if (as_truthy(app_context, &le)) return as_undef();
+	ActionVar scale = as_div(app_context, &length, &cur);
+	geomCompound(app_context, &self, "x", &scale, as_mul);
+	geomCompound(app_context, &self, "y", &scale, as_mul);
+	return as_undef();
 }
 
-// Walk the __proto__ chain of `obj` checking whether any ancestor is
-// `g_point_prototype`. Matches Gnash behavior where Point.distance accepts
-// arguments whose __proto__ was manually pointed at Point.prototype.
-static int objIsPointInstance(ASObject* obj)
+static ActionVar pointToString(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	for (int depth = 0; depth < 16 && obj != NULL; depth++) {
-		if (obj == g_point_prototype) return 1;
-		ActionVar* proto = getProperty(obj, "__proto__", 9);
-		if (proto == NULL || proto->type != ACTION_STACK_VALUE_OBJECT) return 0;
-		obj = (ASObject*)proto->data.numeric_value;
-	}
-	return 0;
+	(void)args; (void)arg_count; (void)registers;
+	static const char* const lits[] = { "(x=", ", y=", ")" };
+	static const char* const f[] = { "x", "y" };
+	return geomToString(app_context, this_obj, lits, f, 2);
 }
 
-// Point static methods
-static ActionVar pointDistance(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers; (void)this_obj;
-	ActionVar r = {0};
-	// First arg must be a Point instance (walks __proto__ chain). Everything
-	// else → undefined. Covers Gnash `Point.distance()` / `Point.distance(undefined)`
-	// and `Point.distance({x,y}, ...)`.
-	if (arg_count == 0 ||
-	    args[0].type != ACTION_STACK_VALUE_OBJECT || args[0].data.numeric_value == 0 ||
-	    !objIsPointInstance((ASObject*)args[0].data.numeric_value)) {
-		r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-	}
-	// Second arg missing or non-object → NaN (Ruffle avm1 `point` test:
-	// `Point.distance(new Point())` → NaN). Gnash allows non-Point objects as
-	// second arg (e.g., plain `{x,y}` literals compute normally).
-	if (arg_count < 2 ||
-	    args[1].type != ACTION_STACK_VALUE_OBJECT || args[1].data.numeric_value == 0) {
-		r.type = ACTION_STACK_VALUE_F64;
-		VAL(double, &r.data.numeric_value) = NAN;
-		return r;
-	}
+// --- Matrix ---
 
-	ASObject* p1 = (ASObject*)args[0].data.numeric_value;
-	ASObject* p2 = (ASObject*)args[1].data.numeric_value;
-	double x1 = varToDoubleSimple(getProperty(p1, "x", 1));
-	double y1 = varToDoubleSimple(getProperty(p1, "y", 1));
-	double x2 = varToDoubleSimple(getProperty(p2, "x", 1));
-	double y2 = varToDoubleSimple(getProperty(p2, "y", 1));
-	double dx = x2 - x1, dy = y2 - y1;
+static const char* const g_matrix_fields[6] = { "a", "b", "c", "d", "tx", "ty" };
 
-	r.type = ACTION_STACK_VALUE_F64;
-	VAL(double, &r.data.numeric_value) = sqrt(dx * dx + dy * dy);
-	return r;
-}
-
-static ActionVar pointInterpolate(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers; (void)this_obj;
-	// Point.interpolate(pt1, pt2, f) → Point(pt2.x + f*(pt1.x-pt2.x), pt2.y + f*(pt1.y-pt2.y))
-	// Gnash's Point.interpolate formula: pt2 + f * (pt1 - pt2). In AS1/AS2 the
-	// implementation uses the abstract `+` operator, so if either pt2.x or the
-	// product is a string, the result is a string concat (matches Flash and
-	// Gnash's test expectations for string-typed coordinates).
-	ActionVar* x1_raw = NULL;
-	ActionVar* y1_raw = NULL;
-	ActionVar* x2_raw = NULL;
-	ActionVar* y2_raw = NULL;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		x1_raw = getProperty((ASObject*)args[0].data.numeric_value, "x", 1);
-		y1_raw = getProperty((ASObject*)args[0].data.numeric_value, "y", 1);
-	}
-	if (arg_count > 1 && args[1].type == ACTION_STACK_VALUE_OBJECT && args[1].data.numeric_value != 0) {
-		x2_raw = getProperty((ASObject*)args[1].data.numeric_value, "x", 1);
-		y2_raw = getProperty((ASObject*)args[1].data.numeric_value, "y", 1);
-	}
-	double x1 = x1_raw ? varToDoubleSimple(x1_raw) : NAN;
-	double y1 = y1_raw ? varToDoubleSimple(y1_raw) : NAN;
-	double x2 = x2_raw ? varToDoubleSimple(x2_raw) : NAN;
-	double y2 = y2_raw ? varToDoubleSimple(y2_raw) : NAN;
-	double f = (arg_count > 2) ? varToDoubleSimple(&args[2]) : NAN;
-
-	// Product: f * (pt1 - pt2). Always numeric (subtract/multiply in ECMA).
-	ActionVar dx_prod = makeF64(f * (x1 - x2));
-	ActionVar dy_prod = makeF64(f * (y1 - y2));
-	// Final: pt2.x + dx_prod, with string concat if pt2.x is a string.
-	ActionVar nx = {0}, ny = {0};
-	avAdditionEcma(app_context, x2_raw, &dx_prod, &nx);
-	avAdditionEcma(app_context, y2_raw, &dy_prod, &ny);
-	ASObject* result = createPointObj(app_context, &nx, &ny);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
-}
-
-static ActionVar pointPolar(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers; (void)this_obj;
-	double len = (arg_count > 0) ? varToDoubleSimple(&args[0]) : NAN;
-	double angle = (arg_count > 1) ? varToDoubleSimple(&args[1]) : NAN;
-
-	ASObject* result = createPointObjF64(app_context, len * cos(angle), len * sin(angle));
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
-}
-
-// --- Matrix methods ---
-
+// flash.geom.Matrix = function(a, b, c, d, tx, ty)
 static ActionVar matrixConstructor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	static const char* names[] = {"a","b","c","d","tx","ty"};
-	static const u32 lens[] = {1,1,1,1,2,2};
-	static const double defaults[] = {1,0,0,1,0,0};
-
+	if (this_obj == NULL) return as_undef();
+	ActionVar self = as_this(this_obj);
 	if (arg_count == 0) {
-		for (int i = 0; i < 6; i++) {
-			ActionVar v = makeF64(defaults[i]);
-			setProperty(app_context, obj, names[i], lens[i], &v);
-		}
-	} else {
-		u32 count = arg_count < 6 ? arg_count : 6;
-		for (u32 i = 0; i < count; i++)
-			setProperty(app_context, obj, names[i], lens[i], &args[i]);
-		for (u32 i = count; i < 6; i++) {
-			ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED;
-			setProperty(app_context, obj, names[i], lens[i], &undef);
-		}
+		(void) as_call_method(app_context, &self, "identity", NULL, 0);
+		return as_undef();
 	}
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	for (int i = 0; i < 6; i++)
+	{
+		ActionVar v = GM_ARG((u32) i);
+		as_set(app_context, &self, g_matrix_fields[i], &v);
+	}
+	return as_undef();
 }
 
-static ActionVar matrixToStringDynamic(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// p.<a> * q.<b>
+static ActionVar geomProd(SWFAppContext* app_context, ActionVar* p, const char* a, ActionVar* q, const char* b)
+{
+	ActionVar x = as_get(app_context, p, a);
+	ActionVar y = as_get(app_context, q, b);
+	return as_mul(app_context, &x, &y);
+}
+
+// acc += p.<a> * q.<b>
+static void geomAccProd(SWFAppContext* app_context, ActionVar* acc, ActionVar* p, const char* a, ActionVar* q, const char* b)
+{
+	ActionVar t = geomProd(app_context, p, a, q, b);
+	*acc = as_add(app_context, acc, &t);
+}
+
+// o.<k> != 0, as a C truth value (`!=` is !(==), so NaN is "not zero")
+static int geomNonZero(SWFAppContext* app_context, ActionVar* o, const char* k)
+{
+	ActionVar v = as_get(app_context, o, k);
+	ActionVar zero = as_num(0);
+	return !as_equals(app_context, &v, &zero);
+}
+
+static void geomSetSix(SWFAppContext* app_context, ActionVar* self, ActionVar* v)
+{
+	for (int i = 0; i < 6; i++) as_set(app_context, self, g_matrix_fields[i], &v[i]);
+}
+
+// concat(m)
+static ActionVar matrixConcat(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar m = GM_ARG(0);
+	ActionVar a = geomProd(app_context, &self, "a", &m, "a");
+	ActionVar d = geomProd(app_context, &self, "d", &m, "d");
+	ActionVar b = as_num(0);
+	ActionVar c = as_num(0);
+	ActionVar tx = geomProd(app_context, &self, "tx", &m, "a");
+	{ ActionVar mtx = as_get(app_context, &m, "tx"); tx = as_add(app_context, &tx, &mtx); }
+	ActionVar ty = geomProd(app_context, &self, "ty", &m, "d");
+	{ ActionVar mty = as_get(app_context, &m, "ty"); ty = as_add(app_context, &ty, &mty); }
+
+	if (geomNonZero(app_context, &self, "b") || geomNonZero(app_context, &self, "c") ||
+	    geomNonZero(app_context, &m, "b") || geomNonZero(app_context, &m, "c"))
+	{
+		geomAccProd(app_context, &a, &self, "b", &m, "c");
+		geomAccProd(app_context, &d, &self, "c", &m, "b");
+		// b += this.a * m.b + this.b * m.d;  (the right side is summed first)
+		{
+			ActionVar p = geomProd(app_context, &self, "a", &m, "b");
+			ActionVar q = geomProd(app_context, &self, "b", &m, "d");
+			ActionVar s = as_add(app_context, &p, &q);
+			b = as_add(app_context, &b, &s);
+		}
+		{
+			ActionVar p = geomProd(app_context, &self, "c", &m, "a");
+			ActionVar q = geomProd(app_context, &self, "d", &m, "c");
+			ActionVar s = as_add(app_context, &p, &q);
+			c = as_add(app_context, &c, &s);
+		}
+		geomAccProd(app_context, &tx, &self, "ty", &m, "c");
+		geomAccProd(app_context, &ty, &self, "tx", &m, "b");
+	}
+	ActionVar six[6] = { a, b, c, d, tx, ty };
+	geomSetSix(app_context, &self, six);
+	return as_undef();
+}
+
+// -(this.<k>) * this.<j>   (unary minus compiles to 0 - x)
+static ActionVar geomNegProd(SWFAppContext* app_context, ActionVar* self, const char* k, const char* j)
+{
+	ActionVar zero = as_num(0);
+	ActionVar v = as_get(app_context, self, k);
+	ActionVar n = as_sub(app_context, &zero, &v);
+	ActionVar w = as_get(app_context, self, j);
+	return as_mul(app_context, &n, &w);
+}
+
+// invert()
+static ActionVar matrixInvert(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	char buf[1024];
-	static const char* names[] = {"a","b","c","d","tx","ty"};
-	static const u32 lens[] = {1,1,1,1,2,2};
-	char vals[6][128];
-	// SWF<7 renders undefined as "", SWF>=7 as "undefined". varToStringBuf
-	// always emits "undefined"; short-circuit UNDEFINED/missing to match
-	// Flash's string-concat version gating.
-	for (int i = 0; i < 6; i++) {
-		ActionVar* v = obj ? getProperty(obj, names[i], lens[i]) : NULL;
-		if (v == NULL || v->type == ACTION_STACK_VALUE_UNDEFINED) {
-			if (g_swf_version >= 7)
-				snprintf(vals[i], sizeof(vals[i]), "undefined");
-			else
-				vals[i][0] = '\0';
-			continue;
-		}
-		varToStringBufFull(app_context, v, vals[i], sizeof(vals[i]));
+	ActionVar self = as_this(this_obj);
+	ActionVar zero = as_num(0), one = as_num(1);
+	ActionVar b0 = as_get(app_context, &self, "b");
+	int cond = as_equals(app_context, &b0, &zero);
+	if (cond) {
+		ActionVar c0 = as_get(app_context, &self, "c");
+		cond = as_equals(app_context, &c0, &zero);
 	}
-	int len = snprintf(buf, sizeof(buf), "(a=%s, b=%s, c=%s, d=%s, tx=%s, ty=%s)",
-	                   vals[0], vals[1], vals[2], vals[3], vals[4], vals[5]);
+	if (cond) {
+		ActionVar a = as_get(app_context, &self, "a");
+		ActionVar ia = as_div(app_context, &one, &a);
+		as_set(app_context, &self, "a", &ia);
+		ActionVar d = as_get(app_context, &self, "d");
+		ActionVar id = as_div(app_context, &one, &d);
+		as_set(app_context, &self, "d", &id);
+		as_set(app_context, &self, "c", &zero);
+		as_set(app_context, &self, "b", &zero);
+		ActionVar tx = geomNegProd(app_context, &self, "a", "tx");
+		as_set(app_context, &self, "tx", &tx);
+		ActionVar ty = geomNegProd(app_context, &self, "d", "ty");
+		as_set(app_context, &self, "ty", &ty);
+		return as_undef();
+	}
 
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_STRING;
-	u32 u16_len;
-	uint16_t* u16 = ascii_to_u16(app_context, buf, len, &u16_len);
-	r.str_size = u16_len;
-	r.data.string_data.heap_ptr = u16;
-	r.data.string_data.owns_memory = true;
-	return r;
+	ActionVar a = as_get(app_context, &self, "a");
+	ActionVar b = as_get(app_context, &self, "b");
+	ActionVar c = as_get(app_context, &self, "c");
+	ActionVar d = as_get(app_context, &self, "d");
+	ActionVar ad = as_mul(app_context, &a, &d);
+	ActionVar bc = as_mul(app_context, &b, &c);
+	ActionVar det = as_sub(app_context, &ad, &bc);
+	if (as_strict_equals(app_context, &det, &zero)) {
+		(void) as_call_method(app_context, &self, "identity", NULL, 0);
+		return as_undef();
+	}
+	det = as_div(app_context, &one, &det);
+	ActionVar v;
+	v = as_mul(app_context, &d, &det); as_set(app_context, &self, "a", &v);
+	{ ActionVar nb = as_sub(app_context, &zero, &b); v = as_mul(app_context, &nb, &det); as_set(app_context, &self, "b", &v); }
+	{ ActionVar nc = as_sub(app_context, &zero, &c); v = as_mul(app_context, &nc, &det); as_set(app_context, &self, "c", &v); }
+	v = as_mul(app_context, &a, &det); as_set(app_context, &self, "d", &v);
+	ActionVar ty = as_get(app_context, &self, "ty");
+	ActionVar tx = as_get(app_context, &self, "tx");
+	ActionVar xy[2] = { tx, ty };
+	ActionVar np = geomNew(app_context, "Point", xy, 2);
+	ActionVar pt = as_call_method(app_context, &self, "deltaTransformPoint", &np, 1);
+	{ ActionVar px = as_get(app_context, &pt, "x"); v = as_sub(app_context, &zero, &px); as_set(app_context, &self, "tx", &v); }
+	{ ActionVar py = as_get(app_context, &pt, "y"); v = as_sub(app_context, &zero, &py); as_set(app_context, &self, "ty", &v); }
+	return as_undef();
+}
+
+// createBox(scaleX, scaleY, rotation, tx, ty)
+static ActionVar matrixCreateBox(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar sx = GM_ARG(0), sy = GM_ARG(1), rot = GM_ARG(2), tx = GM_ARG(3), ty = GM_ARG(4);
+	if (arg_count < 4) tx = as_num(0);
+	if (arg_count < 5) ty = as_num(0);
+	(void) as_call_method(app_context, &self, "identity", NULL, 0);
+	(void) as_call_method(app_context, &self, "rotate", &rot, 1);
+	ActionVar s[2] = { sx, sy };
+	(void) as_call_method(app_context, &self, "scale", s, 2);
+	as_set(app_context, &self, "tx", &tx);
+	as_set(app_context, &self, "ty", &ty);
+	return as_undef();
+}
+
+// createGradientBox(width, height, rotation, tx, ty)
+static ActionVar matrixCreateGradientBox(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar w = GM_ARG(0), h = GM_ARG(1), rot = GM_ARG(2), tx = GM_ARG(3), ty = GM_ARG(4);
+	if (arg_count < 3) rot = as_num(0);
+	if (arg_count < 4) tx = as_num(0);
+	if (arg_count < 5) ty = as_num(0);
+	ActionVar two = as_num(2), k = as_num(1638.4);
+	ActionVar t;
+	t = as_div(app_context, &h, &two);  ActionVar boxY = as_add(app_context, &ty, &t);
+	t = as_div(app_context, &w, &two);  ActionVar boxX = as_add(app_context, &tx, &t);
+	ActionVar scaleY = as_div(app_context, &h, &k);
+	ActionVar scaleX = as_div(app_context, &w, &k);
+	ActionVar box[5] = { scaleX, scaleY, rot, boxX, boxY };
+	(void) as_call_method(app_context, &self, "createBox", box, 5);
+	return as_undef();
 }
 
 static ActionVar matrixClone(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ASObject* result = allocObject(app_context, 8);
-	ActionVar proto_var = {0};
-	proto_var.type = ACTION_STACK_VALUE_OBJECT;
-	proto_var.data.numeric_value = (u64) g_matrix_prototype;
-	setProperty(app_context, result, "__proto__", 9, &proto_var);
-
-	static const char* names[] = {"a","b","c","d","tx","ty"};
-	static const u32 lens[] = {1,1,1,1,2,2};
-	for (int i = 0; i < 6; i++) {
-		ActionVar* v = obj ? getProperty(obj, names[i], lens[i]) : NULL;
-		if (v) setProperty(app_context, result, names[i], lens[i], v);
-	}
-
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar six[6];
+	for (int i = 5; i >= 0; i--) six[i] = as_get(app_context, &self, g_matrix_fields[i]);
+	return geomNew(app_context, "Matrix", six, 6);
 }
 
+// identity(): d, a, c, b, ty, tx
 static ActionVar matrixIdentity(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-	static const char* names[] = {"a","b","c","d","tx","ty"};
-	static const u32 lens[] = {1,1,1,1,2,2};
-	static const double vals[] = {1,0,0,1,0,0};
-	for (int i = 0; i < 6; i++) {
-		ActionVar v = makeF64(vals[i]);
-		setProperty(app_context, obj, names[i], lens[i], &v);
-	}
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar one = as_num(1), zero = as_num(0);
+	as_set(app_context, &self, "d", &one);
+	as_set(app_context, &self, "a", &one);
+	as_set(app_context, &self, "c", &zero);
+	as_set(app_context, &self, "b", &zero);
+	as_set(app_context, &self, "ty", &zero);
+	as_set(app_context, &self, "tx", &zero);
+	return as_undef();
 }
 
-static ActionVar matrixScale(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double sx = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double sy = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-
-	// a*=sx, c*=sx, tx*=sx, b*=sy, d*=sy, ty*=sy
-	double a = propToDoubleSWF(app_context, obj, "a", 1);
-	double b = propToDoubleSWF(app_context, obj, "b", 1);
-	double c = propToDoubleSWF(app_context, obj, "c", 1);
-	double d = propToDoubleSWF(app_context, obj, "d", 1);
-	double tx = propToDoubleSWF(app_context, obj, "tx", 2);
-	double ty = propToDoubleSWF(app_context, obj, "ty", 2);
-
-	ActionVar va = makeF64(a * sx); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(b * sy); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(c * sx); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(d * sy); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(tx * sx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(ty * sy); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-}
-
+// rotate(angle): cos before sin; this.concat(new Matrix(cos, sin, -sin, cos, 0, 0))
 static ActionVar matrixRotate(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double angle = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double cosA = cos(angle), sinA = sin(angle);
-
-	double a = propToDoubleSWF(app_context, obj, "a", 1);
-	double b = propToDoubleSWF(app_context, obj, "b", 1);
-	double c = propToDoubleSWF(app_context, obj, "c", 1);
-	double d = propToDoubleSWF(app_context, obj, "d", 1);
-	double tx = propToDoubleSWF(app_context, obj, "tx", 2);
-	double ty = propToDoubleSWF(app_context, obj, "ty", 2);
-
-	double na = a * cosA + b * (-sinA);
-	double nb = a * sinA + b * cosA;
-	double nc = c * cosA + d * (-sinA);
-	double nd = c * sinA + d * cosA;
-	double ntx = tx * cosA + ty * (-sinA);
-	double nty = tx * sinA + ty * cosA;
-
-	ActionVar va = makeF64(na); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(nb); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(nc); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(nd); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(ntx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(nty); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar angle = GM_ARG(0), zero = as_num(0);
+	ActionVar cs = geomMath(app_context, "cos", &angle, 1);
+	ActionVar sn = geomMath(app_context, "sin", &angle, 1);
+	ActionVar nsn = as_sub(app_context, &zero, &sn);
+	ActionVar six[6] = { cs, sn, nsn, cs, zero, zero };
+	ActionVar m = geomNew(app_context, "Matrix", six, 6);
+	(void) as_call_method(app_context, &self, "concat", &m, 1);
+	return as_undef();
 }
 
+// translate(tx, ty): this.tx += tx; this.ty += ty;
 static ActionVar matrixTranslate(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double dx = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double dy = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-
-	double tx = propToDoubleSWF(app_context, obj, "tx", 2);
-	double ty = propToDoubleSWF(app_context, obj, "ty", 2);
-
-	ActionVar vtx = makeF64(tx + dx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(ty + dy); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar tx = GM_ARG(0), ty = GM_ARG(1);
+	geomCompound(app_context, &self, "tx", &tx, as_add);
+	geomCompound(app_context, &self, "ty", &ty, as_add);
+	return as_undef();
 }
 
-static ActionVar matrixConcat(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// scale(sx, sy): this.concat(new Matrix(sx, 0, 0, sy, 0, 0))
+static ActionVar matrixScale(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double a = propToDoubleSWF(app_context, obj, "a", 1);
-	double b = propToDoubleSWF(app_context, obj, "b", 1);
-	double c = propToDoubleSWF(app_context, obj, "c", 1);
-	double d = propToDoubleSWF(app_context, obj, "d", 1);
-	double tx = propToDoubleSWF(app_context, obj, "tx", 2);
-	double ty = propToDoubleSWF(app_context, obj, "ty", 2);
-
-	double ma = NAN, mb = NAN, mc = NAN, md = NAN, mtx = NAN, mty = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* m = (ASObject*)args[0].data.numeric_value;
-		ma = propToDoubleSWF(app_context, m, "a", 1);
-		mb = propToDoubleSWF(app_context, m, "b", 1);
-		mc = propToDoubleSWF(app_context, m, "c", 1);
-		md = propToDoubleSWF(app_context, m, "d", 1);
-		mtx = propToDoubleSWF(app_context, m, "tx", 2);
-		mty = propToDoubleSWF(app_context, m, "ty", 2);
-	}
-
-	// Right multiply: this = this * m
-	double na  = a * ma + b * mc;
-	double nb  = a * mb + b * md;
-	double nc  = c * ma + d * mc;
-	double nd  = c * mb + d * md;
-	double ntx = tx * ma + ty * mc + mtx;
-	double nty = tx * mb + ty * md + mty;
-
-	ActionVar va = makeF64(na); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(nb); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(nc); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(nd); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(ntx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(nty); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar zero = as_num(0);
+	ActionVar six[6] = { GM_ARG(0), zero, zero, GM_ARG(1), zero, zero };
+	ActionVar m = geomNew(app_context, "Matrix", six, 6);
+	(void) as_call_method(app_context, &self, "concat", &m, 1);
+	return as_undef();
 }
 
-static ActionVar matrixInvert(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// this.<p> * pt.<q> + this.<r> * pt.<s>
+static ActionVar geomDot(SWFAppContext* app_context, ActionVar* self, ActionVar* pt, const char* p, const char* q, const char* r, const char* s)
 {
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double a = propToDoubleSWF(app_context, obj, "a", 1);
-	double b = propToDoubleSWF(app_context, obj, "b", 1);
-	double c = propToDoubleSWF(app_context, obj, "c", 1);
-	double d = propToDoubleSWF(app_context, obj, "d", 1);
-	double tx = propToDoubleSWF(app_context, obj, "tx", 2);
-	double ty = propToDoubleSWF(app_context, obj, "ty", 2);
-
-	double det = a * d - b * c;
-	double na, nb, nc, nd, ntx, nty;
-	if (det == 0.0) {
-		// Singular matrix: Flash (and Ruffle) reset to the identity matrix
-		// rather than propagating infinities. Matches Ruffle matrix.rs:347
-		// `object_to_matrix(...).inverse().unwrap_or_default()`.
-		na  = 1.0; nb  = 0.0;
-		nc  = 0.0; nd  = 1.0;
-		ntx = 0.0; nty = 0.0;
-	} else {
-		double inv_det = 1.0 / det;
-		na  =  d * inv_det;
-		nb  = -b * inv_det;
-		nc  = -c * inv_det;
-		nd  =  a * inv_det;
-		ntx = (c * ty - d * tx) * inv_det;
-		nty = (b * tx - a * ty) * inv_det;
-	}
-
-	ActionVar va = makeF64(na); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(nb); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(nc); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(nd); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(ntx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(nty); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar x = geomProd(app_context, self, p, pt, q);
+	ActionVar y = geomProd(app_context, self, r, pt, s);
+	return as_add(app_context, &x, &y);
 }
 
-static ActionVar matrixCreateBox(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// (delta)TransformPoint(pt): y before x; transformPoint adds this.ty / this.tx
+static ActionVar matrixMapPoint(SWFAppContext* app_context, void* this_obj, ActionVar* pt, int translate)
 {
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double sx = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double sy = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-	double rot = (arg_count > 2) ? varToDoubleSWF(app_context, &args[2], g_swf_version) : NAN;
-	double dtx = (arg_count > 3) ? varToDoubleSWF(app_context, &args[3], g_swf_version) : 0.0;
-	double dty = (arg_count > 4) ? varToDoubleSWF(app_context, &args[4], g_swf_version) : 0.0;
-
-	double cosR = cos(rot), sinR = sin(rot);
-	ActionVar va = makeF64(sx * cosR); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(sy * sinR); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(-sx * sinR); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(sy * cosR); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(dtx); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(dty); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-}
-
-static ActionVar matrixCreateGradientBox(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double w = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double h = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-	double rot = (arg_count > 2) ? varToDoubleSWF(app_context, &args[2], g_swf_version) : 0.0;
-	double dtx = (arg_count > 3) ? varToDoubleSWF(app_context, &args[3], g_swf_version) : 0.0;
-	double dty = (arg_count > 4) ? varToDoubleSWF(app_context, &args[4], g_swf_version) : 0.0;
-
-	double scaleX = w / 1638.4;
-	double scaleY = h / 1638.4;
-	double cosR = cos(rot), sinR = sin(rot);
-	ActionVar va = makeF64(scaleX * cosR); setProperty(app_context, obj, "a", 1, &va);
-	ActionVar vb = makeF64(scaleY * sinR); setProperty(app_context, obj, "b", 1, &vb);
-	ActionVar vc = makeF64(-scaleX * sinR); setProperty(app_context, obj, "c", 1, &vc);
-	ActionVar vd = makeF64(scaleY * cosR); setProperty(app_context, obj, "d", 1, &vd);
-	ActionVar vtx = makeF64(dtx + w / 2.0); setProperty(app_context, obj, "tx", 2, &vtx);
-	ActionVar vty = makeF64(dty + h / 2.0); setProperty(app_context, obj, "ty", 2, &vty);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar y = geomDot(app_context, &self, pt, "d", "y", "b", "x");
+	if (translate) { ActionVar t = as_get(app_context, &self, "ty"); y = as_add(app_context, &y, &t); }
+	ActionVar x = geomDot(app_context, &self, pt, "a", "x", "c", "y");
+	if (translate) { ActionVar t = as_get(app_context, &self, "tx"); x = as_add(app_context, &x, &t); }
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
 }
 
 static ActionVar matrixTransformPoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	double a = obj ? propToDoubleSWF(app_context, obj, "a", 1) : 0.0;
-	double b = obj ? propToDoubleSWF(app_context, obj, "b", 1) : 0.0;
-	double c = obj ? propToDoubleSWF(app_context, obj, "c", 1) : 0.0;
-	double d = obj ? propToDoubleSWF(app_context, obj, "d", 1) : 0.0;
-	double tx = obj ? propToDoubleSWF(app_context, obj, "tx", 2) : 0.0;
-	double ty = obj ? propToDoubleSWF(app_context, obj, "ty", 2) : 0.0;
-
-	double px = NAN, py = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		px = propToDoubleSWF(app_context, pt, "x", 1);
-		py = propToDoubleSWF(app_context, pt, "y", 1);
-	}
-
-	ASObject* result = createPointObjF64(app_context, a * px + c * py + tx, b * px + d * py + ty);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar pt = GM_ARG(0);
+	return matrixMapPoint(app_context, this_obj, &pt, 1);
 }
 
 static ActionVar matrixDeltaTransformPoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	double a = obj ? propToDoubleSWF(app_context, obj, "a", 1) : 0.0;
-	double b = obj ? propToDoubleSWF(app_context, obj, "b", 1) : 0.0;
-	double c = obj ? propToDoubleSWF(app_context, obj, "c", 1) : 0.0;
-	double d = obj ? propToDoubleSWF(app_context, obj, "d", 1) : 0.0;
-
-	double px = NAN, py = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		px = propToDoubleSWF(app_context, pt, "x", 1);
-		py = propToDoubleSWF(app_context, pt, "y", 1);
-	}
-
-	ASObject* result = createPointObjF64(app_context, a * px + c * py, b * px + d * py);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar pt = GM_ARG(0);
+	return matrixMapPoint(app_context, this_obj, &pt, 0);
 }
 
-// --- Rectangle methods ---
+static ActionVar matrixToStringDynamic(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	static const char* const lits[] = { "(a=", ", b=", ", c=", ", d=", ", tx=", ", ty=", ")" };
+	return geomToString(app_context, this_obj, lits, g_matrix_fields, 6);
+}
 
+// --- Rectangle ---
+
+static const char* const g_rect_fields[4] = { "x", "y", "width", "height" };
+
+static ActionVar rectSetEmpty(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj);
+
+// flash.geom.Rectangle = function(x, y, width, height)
 static ActionVar rectangleConstructor(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) {
-		// Bare Rectangle() call without new — act as factory function
+	if (this_obj == NULL) {
+		// Bare call with no receiver at all: keep the historical factory behaviour.
 		initGeomPrototypes(app_context);
 		ActionVar x = (arg_count >= 1) ? args[0] : makeF64(0.0);
 		ActionVar y = (arg_count >= 2) ? args[1] : makeF64(0.0);
@@ -10993,499 +11252,438 @@ static ActionVar rectangleConstructor(SWFAppContext* app_context, ActionVar* arg
 		r.data.numeric_value = (u64) rect;
 		return r;
 	}
-
-	static const char* names[] = {"x","y","width","height"};
-	static const u32 lens[] = {1,1,5,6};
-
+	ActionVar self = as_this(this_obj);
 	if (arg_count == 0) {
-		ActionVar zero = makeF64(0.0);
-		for (int i = 0; i < 4; i++)
-			setProperty(app_context, obj, names[i], lens[i], &zero);
-	} else {
-		u32 count = arg_count < 4 ? arg_count : 4;
-		for (u32 i = 0; i < count; i++)
-			setProperty(app_context, obj, names[i], lens[i], &args[i]);
-		for (u32 i = count; i < 4; i++) {
-			ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED;
-			setProperty(app_context, obj, names[i], lens[i], &undef);
-		}
+		(void) as_call_method(app_context, &self, "setEmpty", NULL, 0);
+		return as_undef();
 	}
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-}
-
-// Rectangle.prototype virtual property getters/setters
-static ActionVar rectLeftGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)app_context; (void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	ActionVar* xv = obj ? getProperty(obj, "x", 1) : NULL;
-	if (xv) return *xv;
-	ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED; return undef;
-}
-
-static ActionVar rectLeftSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	if (obj && arg_count > 0) setProperty(app_context, obj, "x", 1, &args[0]);
-	ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED; return undef;
-}
-
-static ActionVar rectRightGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)app_context; (void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	double x = obj ? varToDoubleSimple(getProperty(obj, "x", 1)) : NAN;
-	double w = obj ? varToDoubleSimple(getProperty(obj, "width", 5)) : NAN;
-	return makeF64(x + w);
-}
-
-static ActionVar rectTopGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)app_context; (void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	ActionVar* yv = obj ? getProperty(obj, "y", 1) : NULL;
-	if (yv) return *yv;
-	ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED; return undef;
-}
-
-static ActionVar rectTopSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	if (obj && arg_count > 0) setProperty(app_context, obj, "y", 1, &args[0]);
-	ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED; return undef;
-}
-
-static ActionVar rectBottomGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)app_context; (void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	double y = obj ? varToDoubleSimple(getProperty(obj, "y", 1)) : NAN;
-	double h = obj ? varToDoubleSimple(getProperty(obj, "height", 6)) : NAN;
-	return makeF64(y + h);
-}
-
-static ActionVar rectTopLeftGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	ActionVar* xv = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* yv = obj ? getProperty(obj, "y", 1) : NULL;
-	ASObject* pt = createPointObj(app_context, xv, yv);
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_OBJECT; r.data.numeric_value = (u64)pt;
-	return r;
-}
-
-static ActionVar rectBottomRightGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	double x = obj ? varToDoubleSimple(getProperty(obj, "x", 1)) : NAN;
-	double y = obj ? varToDoubleSimple(getProperty(obj, "y", 1)) : NAN;
-	double w = obj ? varToDoubleSimple(getProperty(obj, "width", 5)) : NAN;
-	double h = obj ? varToDoubleSimple(getProperty(obj, "height", 6)) : NAN;
-	ActionVar brx = makeF64(x + w);
-	ActionVar bry = makeF64(y + h);
-	ASObject* pt = createPointObj(app_context, &brx, &bry);
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_OBJECT; r.data.numeric_value = (u64)pt;
-	return r;
-}
-
-static ActionVar rectSizeGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*)this_obj;
-	ActionVar* wv = obj ? getProperty(obj, "width", 5) : NULL;
-	ActionVar* hv = obj ? getProperty(obj, "height", 6) : NULL;
-	ASObject* pt = createPointObj(app_context, wv, hv);
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_OBJECT; r.data.numeric_value = (u64)pt;
-	return r;
-}
-
-static ActionVar rectToStringDynamic(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	char buf[512];
-	char xb[64], yb[64], wb[64], hb[64];
-	// SWF<7 renders undefined as "", SWF>=7 as "undefined". Missing
-	// property (e.g. after `delete r0.x`) also reads as undefined in ECMA.
-	#define _RECT_TOSTR_FIELD(name, nlen, out) do { \
-		ActionVar* _v = obj ? getProperty(obj, (name), (nlen)) : NULL; \
-		if (_v == NULL || _v->type == ACTION_STACK_VALUE_UNDEFINED) { \
-			if (g_swf_version >= 7) snprintf((out), sizeof(out), "undefined"); \
-			else (out)[0] = '\0'; \
-		} else { \
-			varToStringBufFull(app_context, _v, (out), sizeof(out)); \
-		} \
-	} while (0)
-	_RECT_TOSTR_FIELD("x", 1, xb);
-	_RECT_TOSTR_FIELD("y", 1, yb);
-	_RECT_TOSTR_FIELD("width", 5, wb);
-	_RECT_TOSTR_FIELD("height", 6, hb);
-	#undef _RECT_TOSTR_FIELD
-	int len = snprintf(buf, sizeof(buf), "(x=%s, y=%s, w=%s, h=%s)", xb, yb, wb, hb);
-
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_STRING;
-	u32 u16_len;
-	uint16_t* u16 = ascii_to_u16(app_context, buf, len, &u16_len);
-	r.str_size = u16_len;
-	r.data.string_data.heap_ptr = u16;
-	r.data.string_data.owns_memory = true;
-	return r;
+	for (int i = 0; i < 4; i++)
+	{
+		ActionVar v = GM_ARG((u32) i);
+		as_set(app_context, &self, g_rect_fields[i], &v);
+	}
+	return as_undef();
 }
 
 static ActionVar rectClone(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar* xv = obj ? getProperty(obj, "x", 1) : NULL;
-	ActionVar* yv = obj ? getProperty(obj, "y", 1) : NULL;
-	ActionVar* wv = obj ? getProperty(obj, "width", 5) : NULL;
-	ActionVar* hv = obj ? getProperty(obj, "height", 6) : NULL;
-	ASObject* result = createRectObj(app_context, xv, yv, wv, hv);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar four[4];
+	for (int i = 3; i >= 0; i--) four[i] = as_get(app_context, &self, g_rect_fields[i]);
+	return geomNew(app_context, "Rectangle", four, 4);
 }
 
-static ActionVar rectEquals(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = 0;
-	if (obj == NULL || arg_count == 0) return r;
-
-	// Must be a Rectangle instance
-	if (args[0].type != ACTION_STACK_VALUE_OBJECT || args[0].data.numeric_value == 0) return r;
-	ASObject* other = (ASObject*)args[0].data.numeric_value;
-	ActionVar* proto = getProperty(other, "__proto__", 9);
-	if (proto == NULL || proto->type != ACTION_STACK_VALUE_OBJECT ||
-	    (ASObject*)proto->data.numeric_value != g_rect_prototype) return r;
-
-	double sx = propToDoubleSWF(app_context, obj, "x", 1);
-	double sy = propToDoubleSWF(app_context, obj, "y", 1);
-	double sw = propToDoubleSWF(app_context, obj, "width", 5);
-	double sh = propToDoubleSWF(app_context, obj, "height", 6);
-	double ox = propToDoubleSWF(app_context, other, "x", 1);
-	double oy = propToDoubleSWF(app_context, other, "y", 1);
-	double ow = propToDoubleSWF(app_context, other, "width", 5);
-	double oh = propToDoubleSWF(app_context, other, "height", 6);
-
-	if (sx == ox && sy == oy && sw == ow && sh == oh)
-		r.data.numeric_value = 1;
-	return r;
-}
-
-static ActionVar rectIsEmpty(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-	// isEmpty: !(width > 0 && height > 0) — NaN/undefined → true
-	r.data.numeric_value = (w > 0 && h > 0) ? 0 : 1;
-	return r;
-}
-
+// setEmpty(): height, width, y, x = 0
 static ActionVar rectSetEmpty(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)args; (void)arg_count; (void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj) {
-		ActionVar zero = makeF64(0.0);
-		setProperty(app_context, obj, "x", 1, &zero);
-		setProperty(app_context, obj, "y", 1, &zero);
-		setProperty(app_context, obj, "width", 5, &zero);
-		setProperty(app_context, obj, "height", 6, &zero);
-	}
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar zero = as_num(0);
+	for (int i = 3; i >= 0; i--) as_set(app_context, &self, g_rect_fields[i], &zero);
+	return as_undef();
 }
 
-static ActionVar rectContains(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// isEmpty(): this.width <= 0 || this.height <= 0
+static ActionVar rectIsEmpty(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-
-	if (arg_count < 2) { r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double px = varToDoubleSWF(app_context, &args[0], g_swf_version);
-	double py = varToDoubleSWF(app_context, &args[1], g_swf_version);
-	if (isnan(px) || isnan(py)) { r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = (px >= x && px < x + w && py >= y && py < y + h) ? 1 : 0;
-	return r;
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar zero = as_num(0);
+	ActionVar w = as_get(app_context, &self, "width");
+	ActionVar r = as_le(app_context, &w, &zero);
+	if (as_truthy(app_context, &r)) return r;
+	ActionVar h = as_get(app_context, &self, "height");
+	return as_le(app_context, &h, &zero);
 }
 
-static ActionVar rectContainsPoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// get left / top: return this.x / this.y
+static ActionVar rectLeftGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-
-	if (arg_count == 0) { r.type = ACTION_STACK_VALUE_BOOLEAN; r.data.numeric_value = 0; return r; }
-
-	double px, py;
-	if (args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		px = propToDoubleSWF(app_context, pt, "x", 1);
-		py = propToDoubleSWF(app_context, pt, "y", 1);
-	} else {
-		px = NAN; py = NAN;
-	}
-
-	if (isnan(px) || isnan(py)) { r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = (px >= x && px < x + w && py >= y && py < y + h) ? 1 : 0;
-	return r;
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	return as_get(app_context, &self, "x");
 }
 
-static ActionVar rectContainsRectangle(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+static ActionVar rectTopGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	return as_get(app_context, &self, "y");
+}
+
+// set left / top: this.<size> += this.<pos> - v; this.<pos> = v;
+static void rectEdgeSet(SWFAppContext* app_context, void* this_obj, ActionVar* v, const char* size, const char* pos)
+{
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar cur = as_get(app_context, &self, size);
+	ActionVar p = as_get(app_context, &self, pos);
+	ActionVar d = as_sub(app_context, &p, v);
+	ActionVar nv = as_add(app_context, &cur, &d);
+	as_set(app_context, &self, size, &nv);
+	as_set(app_context, &self, pos, v);
+}
+
+static ActionVar rectLeftSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
+	ActionVar v = GM_ARG(0);
+	rectEdgeSet(app_context, this_obj, &v, "width", "x");
+	return as_undef();
+}
 
-	if (arg_count == 0 || args[0].type != ACTION_STACK_VALUE_OBJECT || args[0].data.numeric_value == 0) {
-		r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+static ActionVar rectTopSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar v = GM_ARG(0);
+	rectEdgeSet(app_context, this_obj, &v, "height", "y");
+	return as_undef();
+}
+
+// get right / bottom: this.x + this.width / this.y + this.height
+static ActionVar rectRightGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	return geomSum(app_context, &self, "x", "width");
+}
+
+static ActionVar rectBottomGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	return geomSum(app_context, &self, "y", "height");
+}
+
+// set right / bottom: this.<size> = v - this.<pos>
+static ActionVar rectRightSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar v = GM_ARG(0), p = as_get(app_context, &self, "x");
+	ActionVar w = as_sub(app_context, &v, &p);
+	as_set(app_context, &self, "width", &w);
+	return as_undef();
+}
+
+static ActionVar rectBottomSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar v = GM_ARG(0), p = as_get(app_context, &self, "y");
+	ActionVar h = as_sub(app_context, &v, &p);
+	as_set(app_context, &self, "height", &h);
+	return as_undef();
+}
+
+// get topLeft: y before x
+static ActionVar rectTopLeftGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar y = as_get(app_context, &self, "y");
+	ActionVar x = as_get(app_context, &self, "x");
+	ActionVar xy[2] = { x, y };
+	return geomNew(app_context, "Point", xy, 2);
+}
+
+// set topLeft: width, height, then x, y
+static ActionVar rectTopLeftSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar tl = GM_ARG(0);
+	for (int i = 0; i < 2; i++)
+	{
+		const char* size = i ? "height" : "width";
+		const char* pos = i ? "y" : "x";
+		ActionVar cur = as_get(app_context, &self, size);
+		ActionVar p = as_get(app_context, &self, pos);
+		ActionVar q = as_get(app_context, &tl, pos);
+		ActionVar d = as_sub(app_context, &p, &q);
+		ActionVar nv = as_add(app_context, &cur, &d);
+		as_set(app_context, &self, size, &nv);
 	}
+	ActionVar x = as_get(app_context, &tl, "x");
+	as_set(app_context, &self, "x", &x);
+	ActionVar y = as_get(app_context, &tl, "y");
+	as_set(app_context, &self, "y", &y);
+	return as_undef();
+}
 
-	ASObject* other = (ASObject*)args[0].data.numeric_value;
-	double ox = propToDoubleSWF(app_context, other, "x", 1);
-	double oy = propToDoubleSWF(app_context, other, "y", 1);
-	double ow = propToDoubleSWF(app_context, other, "width", 5);
-	double oh = propToDoubleSWF(app_context, other, "height", 6);
+// get bottomRight: bottom before right
+static ActionVar rectBottomRightGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar bottom = geomSum(app_context, &self, "y", "height");
+	ActionVar right = geomSum(app_context, &self, "x", "width");
+	ActionVar xy[2] = { right, bottom };
+	return geomNew(app_context, "Point", xy, 2);
+}
 
-	if (isnan(ox) || isnan(oy) || isnan(ow) || isnan(oh)) {
-		r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+// set bottomRight: width = br.x - this.x; height = br.y - this.y
+static ActionVar rectBottomRightSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar br = GM_ARG(0);
+	ActionVar bx = as_get(app_context, &br, "x"), x = as_get(app_context, &self, "x");
+	ActionVar w = as_sub(app_context, &bx, &x);
+	as_set(app_context, &self, "width", &w);
+	ActionVar by = as_get(app_context, &br, "y"), y = as_get(app_context, &self, "y");
+	ActionVar h = as_sub(app_context, &by, &y);
+	as_set(app_context, &self, "height", &h);
+	return as_undef();
+}
+
+// get size: height before width
+static ActionVar rectSizeGetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar h = as_get(app_context, &self, "height");
+	ActionVar w = as_get(app_context, &self, "width");
+	ActionVar xy[2] = { w, h };
+	return geomNew(app_context, "Point", xy, 2);
+}
+
+// set size: width = size.x; height = size.y
+static ActionVar rectSizeSetter(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = geomAccessorThis(this_obj);
+	ActionVar sz = GM_ARG(0);
+	ActionVar w = as_get(app_context, &sz, "x");
+	as_set(app_context, &self, "width", &w);
+	ActionVar h = as_get(app_context, &sz, "y");
+	as_set(app_context, &self, "height", &h);
+	return as_undef();
+}
+
+// inflate(dx, dy) / inflatePoint(pt): x -= dx; width += dx * 2; y -= dy; height += dy * 2;
+static void rectInflateBy(SWFAppContext* app_context, ActionVar* self, ActionVar* pt, ActionVar* dx, ActionVar* dy)
+{
+	ActionVar two = as_num(2);
+	for (int i = 0; i < 2; i++)
+	{
+		const char* pos = i ? "y" : "x";
+		const char* size = i ? "height" : "width";
+		// this.<pos> -= d: this.<pos> is read before d (pt.<pos>)
+		ActionVar p = as_get(app_context, self, pos);
+		ActionVar d = pt ? as_get(app_context, pt, pos) : (i ? *dy : *dx);
+		ActionVar np = as_sub(app_context, &p, &d);
+		as_set(app_context, self, pos, &np);
+		ActionVar cur = as_get(app_context, self, size);
+		ActionVar d2 = pt ? as_get(app_context, pt, pos) : d;
+		ActionVar m = as_mul(app_context, &d2, &two);
+		ActionVar nv = as_add(app_context, &cur, &m);
+		as_set(app_context, self, size, &nv);
 	}
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	double right = x + w, bottom = y + h;
-	double oright = ox + ow, obottom = oy + oh;
-
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = (ox >= x && oy >= y && oright <= right && obottom <= bottom) ? 1 : 0;
-	return r;
 }
 
 static ActionVar rectInflate(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double dx = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double dy = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-
-	double x = propToDoubleSWF(app_context, obj, "x", 1);
-	double y = propToDoubleSWF(app_context, obj, "y", 1);
-	double w = propToDoubleSWF(app_context, obj, "width", 5);
-	double h = propToDoubleSWF(app_context, obj, "height", 6);
-
-	ActionVar vx = makeF64(x - dx); setProperty(app_context, obj, "x", 1, &vx);
-	ActionVar vy = makeF64(y - dy); setProperty(app_context, obj, "y", 1, &vy);
-	ActionVar vw = makeF64(w + 2 * dx); setProperty(app_context, obj, "width", 5, &vw);
-	ActionVar vh = makeF64(h + 2 * dy); setProperty(app_context, obj, "height", 6, &vh);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar dx = GM_ARG(0), dy = GM_ARG(1);
+	rectInflateBy(app_context, &self, NULL, &dx, &dy);
+	return as_undef();
 }
 
 static ActionVar rectInflatePoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double dx = NAN, dy = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		dx = propToDoubleSWF(app_context, pt, "x", 1);
-		dy = propToDoubleSWF(app_context, pt, "y", 1);
-	}
-
-	double x = propToDoubleSWF(app_context, obj, "x", 1);
-	double y = propToDoubleSWF(app_context, obj, "y", 1);
-	double w = propToDoubleSWF(app_context, obj, "width", 5);
-	double h = propToDoubleSWF(app_context, obj, "height", 6);
-
-	ActionVar vx = makeF64(x - dx); setProperty(app_context, obj, "x", 1, &vx);
-	ActionVar vy = makeF64(y - dy); setProperty(app_context, obj, "y", 1, &vy);
-	ActionVar vw = makeF64(w + 2 * dx); setProperty(app_context, obj, "width", 5, &vw);
-	ActionVar vh = makeF64(h + 2 * dy); setProperty(app_context, obj, "height", 6, &vh);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
-}
-
-static ActionVar rectIntersection(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	double ox = NAN, oy = NAN, ow = NAN, oh = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* other = (ASObject*)args[0].data.numeric_value;
-		ox = propToDoubleSWF(app_context, other, "x", 1);
-		oy = propToDoubleSWF(app_context, other, "y", 1);
-		ow = propToDoubleSWF(app_context, other, "width", 5);
-		oh = propToDoubleSWF(app_context, other, "height", 6);
-	}
-
-	double left = (x > ox) ? x : ox;
-	double top = (y > oy) ? y : oy;
-	double right = ((x + w) < (ox + ow)) ? (x + w) : (ox + ow);
-	double bottom = ((y + h) < (oh + oy)) ? (y + h) : (oh + oy);
-
-	ActionVar rx, ry, rw, rh;
-	if (right > left && bottom > top) {
-		rx = makeF64(left); ry = makeF64(top);
-		rw = makeF64(right - left); rh = makeF64(bottom - top);
-	} else {
-		rx = makeF64(0); ry = makeF64(0);
-		rw = makeF64(0); rh = makeF64(0);
-	}
-
-	ASObject* result = createRectObj(app_context, &rx, &ry, &rw, &rh);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
-}
-
-static ActionVar rectIntersects(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
-{
-	// Calls intersection logic inline
-	ASObject* obj = (ASObject*) this_obj;
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_BOOLEAN;
-	r.data.numeric_value = 0;
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	double ox = NAN, oy = NAN, ow = NAN, oh = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* other = (ASObject*)args[0].data.numeric_value;
-		ox = propToDoubleSWF(app_context, other, "x", 1);
-		oy = propToDoubleSWF(app_context, other, "y", 1);
-		ow = propToDoubleSWF(app_context, other, "width", 5);
-		oh = propToDoubleSWF(app_context, other, "height", 6);
-	}
-
-	double left = (x > ox) ? x : ox;
-	double top = (y > oy) ? y : oy;
-	double right_val = ((x + w) < (ox + ow)) ? (x + w) : (ox + ow);
-	double bottom_val = ((y + h) < (oh + oy)) ? (y + h) : (oh + oy);
-
-	if (right_val > left && bottom_val > top)
-		r.data.numeric_value = 1;
-	return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar pt = GM_ARG(0);
+	rectInflateBy(app_context, &self, &pt, NULL, NULL);
+	return as_undef();
 }
 
 static ActionVar rectOffset(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double dx = (arg_count > 0) ? varToDoubleSWF(app_context, &args[0], g_swf_version) : NAN;
-	double dy = (arg_count > 1) ? varToDoubleSWF(app_context, &args[1], g_swf_version) : NAN;
-
-	double x = propToDoubleSWF(app_context, obj, "x", 1);
-	double y = propToDoubleSWF(app_context, obj, "y", 1);
-
-	ActionVar vx = makeF64(x + dx); setProperty(app_context, obj, "x", 1, &vx);
-	ActionVar vy = makeF64(y + dy); setProperty(app_context, obj, "y", 1, &vy);
-
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar dx = GM_ARG(0), dy = GM_ARG(1);
+	geomCompound(app_context, &self, "x", &dx, as_add);
+	geomCompound(app_context, &self, "y", &dy, as_add);
+	return as_undef();
 }
 
 static ActionVar rectOffsetPoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-	if (obj == NULL) { ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r; }
-
-	double dx = NAN, dy = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* pt = (ASObject*)args[0].data.numeric_value;
-		dx = propToDoubleSWF(app_context, pt, "x", 1);
-		dy = propToDoubleSWF(app_context, pt, "y", 1);
+	ActionVar self = as_this(this_obj);
+	ActionVar pt = GM_ARG(0);
+	for (int i = 0; i < 2; i++)
+	{
+		// this.<pos> += pt.<pos>: this.<pos> is read first
+		const char* pos = i ? "y" : "x";
+		ActionVar cur = as_get(app_context, &self, pos);
+		ActionVar d = as_get(app_context, &pt, pos);
+		ActionVar nv = as_add(app_context, &cur, &d);
+		as_set(app_context, &self, pos, &nv);
 	}
+	return as_undef();
+}
 
-	double x = propToDoubleSWF(app_context, obj, "x", 1);
-	double y = propToDoubleSWF(app_context, obj, "y", 1);
+// x >= this.x && x < this.x + this.width && y >= this.y && y < this.y + this.height
+// with x/y read from `pt` (containsPoint) or given (contains); each pt read is a get.
+static ActionVar rectContainsXY(SWFAppContext* app_context, void* this_obj, ActionVar* pt, ActionVar* x, ActionVar* y)
+{
+	ActionVar self = as_this(this_obj);
+	ActionVar r = as_undef();
+	for (int i = 0; i < 2; i++)
+	{
+		const char* pos = i ? "y" : "x";
+		const char* size = i ? "height" : "width";
+		ActionVar v = pt ? as_get(app_context, pt, pos) : (i ? *y : *x);
+		ActionVar p = as_get(app_context, &self, pos);
+		r = as_ge(app_context, &v, &p);
+		if (!as_truthy(app_context, &r)) return r;
+		ActionVar v2 = pt ? as_get(app_context, pt, pos) : v;
+		ActionVar edge = geomSum(app_context, &self, pos, size);
+		r = as_lt(app_context, &v2, &edge);
+		if (!as_truthy(app_context, &r)) return r;
+	}
+	return r;
+}
 
-	ActionVar vx = makeF64(x + dx); setProperty(app_context, obj, "x", 1, &vx);
-	ActionVar vy = makeF64(y + dy); setProperty(app_context, obj, "y", 1, &vy);
+static ActionVar rectContains(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar x = GM_ARG(0), y = GM_ARG(1);
+	return rectContainsXY(app_context, this_obj, NULL, &x, &y);
+}
 
-	ActionVar r = {0}; r.type = ACTION_STACK_VALUE_UNDEFINED; return r;
+static ActionVar rectContainsPoint(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar pt = GM_ARG(0);
+	return rectContainsXY(app_context, this_obj, &pt, NULL, NULL);
+}
+
+// containsRectangle(rect)
+static ActionVar rectContainsRectangle(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar rect = GM_ARG(0);
+	ActionVar rectRight = geomSum(app_context, &rect, "x", "width");
+	ActionVar rectBottom = geomSum(app_context, &rect, "y", "height");
+	ActionVar right = geomSum(app_context, &self, "x", "width");
+	ActionVar bottom = geomSum(app_context, &self, "y", "height");
+	ActionVar r, a, b;
+	#define GM_STEP(expr) do { r = (expr); if (!as_truthy(app_context, &r)) return r; } while (0)
+	a = as_get(app_context, &rect, "x"); b = as_get(app_context, &self, "x"); GM_STEP(as_ge(app_context, &a, &b));
+	a = as_get(app_context, &rect, "x");                                       GM_STEP(as_lt(app_context, &a, &right));
+	a = as_get(app_context, &rect, "y"); b = as_get(app_context, &self, "y"); GM_STEP(as_ge(app_context, &a, &b));
+	a = as_get(app_context, &rect, "y");                                       GM_STEP(as_lt(app_context, &a, &bottom));
+	b = as_get(app_context, &self, "x");                                       GM_STEP(as_gt(app_context, &rectRight, &b));
+	                                                                           GM_STEP(as_le(app_context, &rectRight, &right));
+	b = as_get(app_context, &self, "y");                                       GM_STEP(as_gt(app_context, &rectBottom, &b));
+	#undef GM_STEP
+	return as_le(app_context, &rectBottom, &bottom);
+}
+
+// result.<pos> = Math.<fn>(this.<pos>, other.<pos>)  (arguments evaluated last to first)
+static void rectMathPos(SWFAppContext* app_context, ActionVar* result, ActionVar* self, ActionVar* other, const char* fn, const char* pos)
+{
+	ActionVar mm[2];
+	mm[1] = as_get(app_context, other, pos);
+	mm[0] = as_get(app_context, self, pos);
+	ActionVar v = geomMath(app_context, fn, mm, 2);
+	as_set(app_context, result, pos, &v);
+}
+
+// result.<size> = Math.<fn>(self edge, other edge) - result.<pos>
+static void rectMathSize(SWFAppContext* app_context, ActionVar* result, ActionVar* self, ActionVar* other, const char* fn, const char* pos, const char* size)
+{
+	ActionVar mm[2];
+	mm[1] = geomSum(app_context, other, pos, size);
+	mm[0] = geomSum(app_context, self, pos, size);
+	ActionVar m = geomMath(app_context, fn, mm, 2);
+	ActionVar p = as_get(app_context, result, pos);
+	ActionVar v = as_sub(app_context, &m, &p);
+	as_set(app_context, result, size, &v);
+}
+
+// result of `<obj>.isEmpty()` as a truth value
+static int geomCallIsEmpty(SWFAppContext* app_context, ActionVar* obj)
+{
+	ActionVar r = as_call_method(app_context, obj, "isEmpty", NULL, 0);
+	return as_truthy(app_context, &r);
+}
+
+static ActionVar rectIntersection(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar other = GM_ARG(0);
+	ActionVar result = geomNew(app_context, "Rectangle", NULL, 0);
+	if (geomCallIsEmpty(app_context, &self) || geomCallIsEmpty(app_context, &other)) {
+		(void) as_call_method(app_context, &result, "setEmpty", NULL, 0);
+		return result;
+	}
+	rectMathPos(app_context, &result, &self, &other, "max", "x");
+	rectMathPos(app_context, &result, &self, &other, "max", "y");
+	rectMathSize(app_context, &result, &self, &other, "min", "x", "width");
+	rectMathSize(app_context, &result, &self, &other, "min", "y", "height");
+	ActionVar zero = as_num(0);
+	ActionVar w = as_get(app_context, &result, "width");
+	ActionVar e = as_le(app_context, &w, &zero);
+	if (!as_truthy(app_context, &e)) {
+		ActionVar h = as_get(app_context, &result, "height");
+		e = as_le(app_context, &h, &zero);
+	}
+	if (as_truthy(app_context, &e))
+		(void) as_call_method(app_context, &result, "setEmpty", NULL, 0);
+	return result;
+}
+
+// intersects(r): !this.intersection(r).isEmpty()
+static ActionVar rectIntersects(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar self = as_this(this_obj);
+	ActionVar other = GM_ARG(0);
+	ActionVar res = as_call_method(app_context, &self, "intersection", &other, 1);
+	ActionVar e = as_call_method(app_context, &res, "isEmpty", NULL, 0);
+	return as_not(app_context, &e);
 }
 
 static ActionVar rectUnion(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
 	(void)registers;
-	ASObject* obj = (ASObject*) this_obj;
-
-	double x = obj ? propToDoubleSWF(app_context, obj, "x", 1) : 0.0;
-	double y = obj ? propToDoubleSWF(app_context, obj, "y", 1) : 0.0;
-	double w = obj ? propToDoubleSWF(app_context, obj, "width", 5) : 0.0;
-	double h = obj ? propToDoubleSWF(app_context, obj, "height", 6) : 0.0;
-
-	double ox = NAN, oy = NAN, ow = NAN, oh = NAN;
-	if (arg_count > 0 && args[0].type == ACTION_STACK_VALUE_OBJECT && args[0].data.numeric_value != 0) {
-		ASObject* other = (ASObject*)args[0].data.numeric_value;
-		ox = propToDoubleSWF(app_context, other, "x", 1);
-		oy = propToDoubleSWF(app_context, other, "y", 1);
-		ow = propToDoubleSWF(app_context, other, "width", 5);
-		oh = propToDoubleSWF(app_context, other, "height", 6);
-	}
-
-	double left = (x < ox) ? x : ox;
-	double top = (y < oy) ? y : oy;
-	double right_val = ((x + w) > (ox + ow)) ? (x + w) : (ox + ow);
-	double bottom_val = ((y + h) > (oh + oy)) ? (y + h) : (oh + oy);
-
-	ActionVar rx = makeF64(left), ry = makeF64(top);
-	ActionVar rw = makeF64(right_val - left), rh = makeF64(bottom_val - top);
-	ASObject* result = createRectObj(app_context, &rx, &ry, &rw, &rh);
-	ActionVar r = {0};
-	r.type = ACTION_STACK_VALUE_OBJECT;
-	r.data.numeric_value = (u64) result;
-	return r;
+	ActionVar self = as_this(this_obj);
+	ActionVar other = GM_ARG(0);
+	if (geomCallIsEmpty(app_context, &self))
+		return as_call_method(app_context, &other, "clone", NULL, 0);
+	if (geomCallIsEmpty(app_context, &other))
+		return as_call_method(app_context, &self, "clone", NULL, 0);
+	ActionVar result = geomNew(app_context, "Rectangle", NULL, 0);
+	rectMathPos(app_context, &result, &self, &other, "min", "x");
+	rectMathPos(app_context, &result, &self, &other, "min", "y");
+	rectMathSize(app_context, &result, &self, &other, "max", "x", "width");
+	rectMathSize(app_context, &result, &self, &other, "max", "y", "height");
+	return result;
 }
+
+static ActionVar rectEquals(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)registers;
+	ActionVar o = GM_ARG(0);
+	return geomEquals(app_context, this_obj, &o, "Rectangle", g_rect_fields, 4);
+}
+
+static ActionVar rectToStringDynamic(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+	(void)args; (void)arg_count; (void)registers;
+	static const char* const lits[] = { "(x=", ", y=", ", w=", ", h=", ")" };
+	return geomToString(app_context, this_obj, lits, g_rect_fields, 4);
+}
+
+#undef GM_ARG
 
 // --- Geometry initialization ---
 
@@ -11508,8 +11706,12 @@ static void initGeomPrototypes(SWFAppContext* app_context)
 	memset(&g_point_length_getter, 0, sizeof(ASFunction));
 	g_point_length_getter.function_type = 2;
 	g_point_length_getter.advanced_func = (Function2Ptr)pointLengthGetter;
-	setAddPropertyWithFlags(app_context, g_point_prototype, "length", 6, &g_point_length_getter, NULL,
-	                        PROPERTY_FLAG_ENUMERABLE | PROPERTY_FLAG_CONFIGURABLE);
+	memset(&g_point_length_setter, 0, sizeof(ASFunction));
+	g_point_length_setter.function_type = 2;
+	g_point_length_setter.advanced_func = (Function2Ptr)geomNoopSetter;
+	// Point.as: o.addProperty("length", getter, no-op setter) — default flags.
+	setAddPropertyWithFlags(app_context, g_point_prototype, "length", 6, &g_point_length_getter, &g_point_length_setter,
+	                        PROPERTY_FLAGS_DEFAULT);
 	registerGeomMethod(&g_point_methods[4], "clone",     (Function2Ptr)pointClone,      app_context, g_point_prototype);
 	registerGeomMethod(&g_point_methods[5], "offset",    (Function2Ptr)pointOffset,     app_context, g_point_prototype);
 	registerGeomMethod(&g_point_methods[3], "equals",    (Function2Ptr)pointEquals,     app_context, g_point_prototype);
@@ -11557,25 +11759,24 @@ static void initGeomPrototypes(SWFAppContext* app_context)
 	// Virtual computed properties: left, right, top, bottom, topLeft, bottomRight, size
 	// Insertion order (LIFO): left, right, top, bottom, topLeft, bottomRight, size → enumerates as size, bottomRight, topLeft, bottom, top, right, left
 	{
-		const u8 ro = PROPERTY_FLAG_ENUMERABLE | PROPERTY_FLAG_CONFIGURABLE; // READ_ONLY
-		for (int i = 0; i < 7; i++) { memset(&g_rect_virt_getters[i], 0, sizeof(ASFunction)); g_rect_virt_getters[i].function_type = 2; }
-		for (int i = 0; i < 2; i++) { memset(&g_rect_virt_setters[i], 0, sizeof(ASFunction)); g_rect_virt_setters[i].function_type = 2; }
-		g_rect_virt_getters[0].advanced_func = (Function2Ptr)rectLeftGetter;
-		g_rect_virt_getters[1].advanced_func = (Function2Ptr)rectRightGetter;
-		g_rect_virt_getters[2].advanced_func = (Function2Ptr)rectTopGetter;
-		g_rect_virt_getters[3].advanced_func = (Function2Ptr)rectBottomGetter;
-		g_rect_virt_getters[4].advanced_func = (Function2Ptr)rectTopLeftGetter;
-		g_rect_virt_getters[5].advanced_func = (Function2Ptr)rectBottomRightGetter;
-		g_rect_virt_getters[6].advanced_func = (Function2Ptr)rectSizeGetter;
-		g_rect_virt_setters[0].advanced_func = (Function2Ptr)rectLeftSetter;
-		g_rect_virt_setters[1].advanced_func = (Function2Ptr)rectTopSetter;
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "left",        4,  &g_rect_virt_getters[0], &g_rect_virt_setters[0], PROPERTY_FLAGS_DEFAULT);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "right",       5,  &g_rect_virt_getters[1], NULL, ro);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "top",         3,  &g_rect_virt_getters[2], &g_rect_virt_setters[1], PROPERTY_FLAGS_DEFAULT);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "bottom",      6,  &g_rect_virt_getters[3], NULL, ro);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "topLeft",     7,  &g_rect_virt_getters[4], NULL, ro);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "bottomRight", 11, &g_rect_virt_getters[5], NULL, ro);
-		setAddPropertyWithFlags(app_context, g_rect_prototype, "size",        4,  &g_rect_virt_getters[6], NULL, ro);
+		// Rectangle.as: o.addProperty(name, getter, setter) — all seven have setters, default flags.
+		static const char* const names[7] = { "left", "right", "top", "bottom", "topLeft", "bottomRight", "size" };
+		static const Function2Ptr gets[7] = { (Function2Ptr)rectLeftGetter, (Function2Ptr)rectRightGetter,
+			(Function2Ptr)rectTopGetter, (Function2Ptr)rectBottomGetter, (Function2Ptr)rectTopLeftGetter,
+			(Function2Ptr)rectBottomRightGetter, (Function2Ptr)rectSizeGetter };
+		static const Function2Ptr sets[7] = { (Function2Ptr)rectLeftSetter, (Function2Ptr)rectRightSetter,
+			(Function2Ptr)rectTopSetter, (Function2Ptr)rectBottomSetter, (Function2Ptr)rectTopLeftSetter,
+			(Function2Ptr)rectBottomRightSetter, (Function2Ptr)rectSizeSetter };
+		for (int i = 0; i < 7; i++) {
+			memset(&g_rect_virt_getters[i], 0, sizeof(ASFunction));
+			g_rect_virt_getters[i].function_type = 2;
+			g_rect_virt_getters[i].advanced_func = gets[i];
+			memset(&g_rect_virt_setters[i], 0, sizeof(ASFunction));
+			g_rect_virt_setters[i].function_type = 2;
+			g_rect_virt_setters[i].advanced_func = sets[i];
+			setAddPropertyWithFlags(app_context, g_rect_prototype, names[i], (u32) strlen(names[i]),
+			                        &g_rect_virt_getters[i], &g_rect_virt_setters[i], PROPERTY_FLAGS_DEFAULT);
+		}
 	}
 	registerGeomMethod(&g_rect_methods[8],  "inflate",            (Function2Ptr)rectInflate,            app_context, g_rect_prototype);
 	registerGeomMethod(&g_rect_methods[9],  "inflatePoint",       (Function2Ptr)rectInflatePoint,       app_context, g_rect_prototype);
@@ -15503,7 +15704,10 @@ static ActionVar objectToPrimitive(SWFAppContext* app_context, ActionVar* obj_va
 				// a type-2 callee never saw a this-cell here — gate the flag
 				// per-branch rather than normalize (a new this-cell is
 				// observable to nested calls via actionGetVariable's early
-				// path). No scopes, no exec-func — never done.
+				// path). No exec-func. The callee's captured scopes plus a
+				// local frame ARE installed (s22 M5): a closure valueOf
+				// (`{valueOf: function() { use outer var }}`) runs in its
+				// defining scope, as in Flash/Ruffle.
 				// INV_VERSION_SWITCH added by normalization pass (b):
 				// valueOf runs at its DEFINING movie's SWF version
 				// (regression/coerce_cross_swf_version, Less2 row).
@@ -15511,6 +15715,7 @@ static ActionVar objectToPrimitive(SWFAppContext* app_context, ActionVar* obj_va
 				otp_this.type = ACTION_STACK_VALUE_OBJECT;
 				otp_this.data.numeric_value = (u64)(uintptr_t)obj;
 				InvokeOpts otp_opts = { .flags = INV_VERSION_SWITCH | INV_SPECIAL_GUARD |
+				                        INV_CAPTURED_SCOPE | INV_LOCAL_SCOPE |
 				                        ((func->function_type == 1)
 				                                     ? INV_THIS_STACK : 0u) };
 				ActionVar result = invokeFunctionValue(app_context, func, &otp_this,
@@ -22364,6 +22569,7 @@ static size_t extractTextFieldParams(SWFAppContext* app_context, MovieClip* mc,
 	int* out_word_wrap, int* out_field_width_twips,
 	int* out_left_margin_twips, int* out_right_margin_twips, int* out_indent_twips);
 static void applyAutoSize(SWFAppContext* app_context, MovieClip* mc, int skip_if_empty);
+static int tf_embedded_font_missing(MovieClip* mc, u16 font_id);
 
 // Forward declarations for HTML text format run system
 typedef struct TFRun_s {
@@ -22374,6 +22580,7 @@ typedef struct TFRun_s {
 	u8 bold; u8 italic; u8 underline;
 	char font_name[64]; char href[256]; char href_target[64];
 	char tabstops[128]; // Comma-separated tab stop values, empty = none
+	u16 img; // html_img.h pool index of an <img> placeholder run (0 = none)
 } TFRun;
 #define TF_MAX_RUNS   512
 #define TF_MAX_TABLES  32
@@ -22390,6 +22597,7 @@ typedef struct {
 static TFRunTable* tf_get_table(MovieClip* mc);
 static TFRunTable* tf_find_table(MovieClip* mc);
 static void tf_get_defaults(MovieClip* mc, TFRun* def);
+static int tf_apply_new_format_font(MovieClip* mc, TFRun* def);
 static int tf_parse_html(TFRunTable* table, const char* html, u32 html_len,
                          const TFRun* defaults, int condense_white, int swf_version, int is_multiline);
 static char* tf_serialize_html(TFRunTable* table, int is_multiline);
@@ -22691,6 +22899,7 @@ static void tfRebuildFromHtml(SWFAppContext* app_context, MovieClip* mc,
 	table->from_html_text = 1;
 	TFRun defaults;
 	tf_get_defaults(mc, &defaults);
+	tf_apply_new_format_font(mc, &defaults);
 	{
 		ActionVar* tc_prop = getProperty(props, "textColor", 9);
 		if (tc_prop != NULL && tc_prop->type == ACTION_STACK_VALUE_F64) {
@@ -22723,7 +22932,7 @@ static void tfRebuildFromHtml(SWFAppContext* app_context, MovieClip* mc,
 			setProperty(app_context, props, "_tf_letterSpacing", 17, &ls_val);
 		}
 		if (first_run->font_name[0] != '\0') {
-			u16 found_fid = ng_findFontIdByName(first_run->font_name);
+			u16 found_fid = ng_resolveTextFormatFontId(first_run->font_name, first_run->bold, first_run->italic);
 			ActionVar fid_val = {0};
 			fid_val.type = ACTION_STACK_VALUE_F64;
 			VAL(double, &fid_val.data.numeric_value) = (double)found_fid;
@@ -25591,10 +25800,30 @@ void actionTickAvm1ChildrenUnderAvm2(SWFAppContext* app_context,
 //             Ruffle's LoaderDisplay absorbs that into the Loader itself.
 //   MISS    — the point is outside the AVM1 child entirely.
 //
-// Hit areas come from the same pixel AABBs actionDispatchMCPress/Release
-// test, so a click the AVM2 side attributes to AVM1 is exactly a click the
-// AVM1 dispatchers will act on.
-int actionAvm1ChildMousePick(float x, float y)
+// Button-mode clips are found by the same pixel AABBs actionDispatchMCPress/
+// Release test, so a click the AVM2 side attributes to AVM1 is exactly a click
+// the AVM1 dispatchers will act on. Everything else answers through Ruffle's
+// mouse_pick_avm1 rules:
+//   * a selectable/input TextField is itself the AVM1 target
+//     (edit_text.rs::mouse_pick_avm1), so the AVM2 side traces no `click`;
+//   * a timeline DefineButton whose hit shape covers the point is the target
+//     (avm1_button.rs::mouse_pick_avm1) — its state machine runs in
+//     actionMouseAvm1ChildrenUnderAvm2 below;
+//   * a level root and any timeline sprite (one that owns a display list)
+//     answer through the exact shape walk AVM1 hitTest(x, y, true) uses, never
+//     their AABB: an L-shaped or ring sprite, or the level root's union box,
+//     must not claim the empty space inside it (avm2/mouse_pick_loader_avm1).
+static int mc_is_focusable_by_click(MovieClip* mc);
+
+static int avm1UnderAvm2IsTimelineClip(MovieClip* mc)
+{
+	for (int j = 0; j < g_avm1u2_count; j++)
+		if (g_avm1u2[j].mc == mc) return 1;
+	DisplayObject* d = (DisplayObject*) mc->display_obj;
+	return d != NULL && d->sprite_display_list != NULL;
+}
+
+int actionAvm1ChildMousePick(SWFAppContext* app_context, float x, float y)
 {
 	if (!g_avm1_under_avm2_ready || g_avm1u2_count == 0)
 		return AVM1_CHILD_PICK_MISS;
@@ -25602,6 +25831,10 @@ int actionAvm1ChildMousePick(float x, float y)
 	extern int child_mc_count;
 	extern int actionMCHasButtonHandlers(MovieClip*);
 	extern int actionMCMouseInsidePick(MovieClip*, float, float);
+	extern int ng_button_hit_in_dl(SWFAppContext*, DisplayObject*, size_t,
+	                               const float (*)[16], double, double);
+	extern int ng_hitTestShapeFromDL(DisplayObject*, size_t, double, double,
+	                                 double, double, double, double, double, double);
 
 	int found = AVM1_CHILD_PICK_MISS;
 	for (int i = 0; i < child_mc_count; i++) {
@@ -25617,24 +25850,45 @@ int actionAvm1ChildMousePick(float x, float y)
 				if (g_avm1u2[j].mc == p) { owned = 1; break; }
 		if (!owned) continue;
 		if (!actionMCMouseInsidePick(mc, x, y)) continue;
-		found = AVM1_CHILD_PICK_CONTENT;
 		// Text fields take focus rather than onPress/onRelease, exactly as in
-		// actionDispatchMCPress.
-		if (mc->ng_textfield_idx >= 0 || mc->ng_textfield_idx == -2) continue;
+		// actionDispatchMCPress; a selectable one is the pick target itself.
+		if (mc->ng_textfield_idx >= 0 || mc->ng_textfield_idx == -2) {
+			if (mc_is_focusable_by_click(mc)) return AVM1_CHILD_PICK_BUTTON;
+			found = AVM1_CHILD_PICK_CONTENT;
+			continue;
+		}
+		// A timeline clip's box is not its shape: the exact walk below decides.
+		if (!avm1UnderAvm2IsTimelineClip(mc)) found = AVM1_CHILD_PICK_CONTENT;
 		if (actionMCHasButtonHandlers(mc)) return AVM1_CHILD_PICK_BUTTON;
 	}
-	// Timeline content (shapes/sprites placed by the child's own tags) never
-	// enters child_mc_cache, so ask the level roots for their display-list
-	// bounds as well before reporting a miss.
-	if (found == AVM1_CHILD_PICK_MISS) {
-		for (int j = 0; j < g_avm1u2_count; j++) {
-			MovieClip* r = g_avm1u2[j].mc;
-			if (r == NULL || r->depth == INT_MIN || r->unloaded) continue;
-			if (actionMCMouseInsidePick(r, x, y))
-				return AVM1_CHILD_PICK_CONTENT;
-		}
+	// Timeline DefineButtons (never in child_mc_cache as button-mode clips).
+	for (int j = 0; j < g_avm1u2_count; j++) {
+		MovieClip* r = g_avm1u2[j].mc;
+		if (r == NULL || r->depth == INT_MIN || r->unloaded || !r->visible) continue;
+		DisplayObject* d = (DisplayObject*) r->display_obj;
+		if (d == NULL || d->sprite_display_list == NULL) continue;
+		const float (*td)[16] = g_avm1u2[j].entry != NULL
+			? (const float (*)[16]) g_avm1u2[j].entry->transform_data_ptr : NULL;
+		if (ng_button_hit_in_dl(app_context, d->sprite_display_list,
+		                        d->sprite_max_depth, td, x * 20.0, y * 20.0))
+			return AVM1_CHILD_PICK_BUTTON;
 	}
-	return found;
+	if (found != AVM1_CHILD_PICK_MISS) return found;
+	// Timeline content (shapes/sprites placed by the child's own tags): the
+	// level roots' display lists, shape-exact.
+	for (int j = 0; j < g_avm1u2_count; j++) {
+		MovieClip* r = g_avm1u2[j].mc;
+		if (r == NULL || r->depth == INT_MIN || r->unloaded || !r->visible) continue;
+		DisplayObject* d = (DisplayObject*) r->display_obj;
+		if (d == NULL || d->sprite_display_list == NULL) continue;
+		double a = 1, b = 0, c = 0, dd = 1, tx = 0, ty = 0;
+		getConcatMatrixForMC(r, &a, &b, &c, &dd, &tx, &ty);
+		if (ng_hitTestShapeFromDL(d->sprite_display_list, d->sprite_max_depth,
+		                          a, b, c, dd, tx * 20.0, ty * 20.0,
+		                          x * 20.0, y * 20.0))
+			return AVM1_CHILD_PICK_CONTENT;
+	}
+	return AVM1_CHILD_PICK_MISS;
 }
 
 // Mouse event kinds the AVM2 input pump forwards into AVM1 (mirrored, with the
@@ -25658,8 +25912,61 @@ int actionAvm1ChildMousePick(float x, float y)
 //
 // The child-context swap around the dispatch is avm1UnderAvm2EnterChild's,
 // above.
+//
+// `avm2_pick_is_avm1` is whether the AVM2 pick for this event resolved to the
+// AVM1 object (Ruffle's single pick decides both VMs). The two AVM1 mechanisms
+// that Flash drives from that pick — the timeline DefineButton state machine
+// and click focus — see the real point only then; otherwise they see the
+// pointer as outside every AVM1 object (an AVM2 `mouseChildren = false`
+// container above the Loader must not let an AVM1 button fire).
+static void mouse_click_focus_at(SWFAppContext* app_context, float mx, float my,
+                                 int click_focusable_only);
+extern int ng_update_button_states_in_level(SWFAppContext* app_context,
+	DisplayObject* dl, size_t dl_max, MovieClip* level_mc,
+	const float (*hit_td)[16]);
+
+static void avm1UnderAvm2RunButtons(SWFAppContext* app_context, int avm2_pick_is_avm1)
+{
+	extern DisplayObject* display_list;
+	extern size_t max_depth;
+	extern size_t display_list_capacity;
+	MouseState* ms = &app_context->mouse;
+	float sx = ms->stage_x, sy = ms->stage_y;
+	if (!avm2_pick_is_avm1) { ms->stage_x = -1e7f; ms->stage_y = -1e7f; }
+	for (int j = 0; j < g_avm1u2_count; j++) {
+		MovieClip* r = g_avm1u2[j].mc;
+		if (r == NULL || r->depth == INT_MIN || r->unloaded) continue;
+		DisplayObject* d = (DisplayObject*) r->display_obj;
+		if (d == NULL || d->sprite_display_list == NULL) continue;
+		// Same display-list and transform-table swap avm1UnderAvm2RunFrame
+		// does: a button state change places its state children through the
+		// global list, with the child's placement ids.
+		extern float (*g_active_transform_data)[16];
+		DisplayObject* sdl = display_list;
+		size_t smax = max_depth, scap = display_list_capacity;
+		float (*std)[16] = g_active_transform_data;
+		display_list = d->sprite_display_list;
+		max_depth = d->sprite_max_depth;
+		display_list_capacity = d->sprite_dl_capacity;
+		float (*td)[16] = g_avm1u2[j].entry != NULL
+			? g_avm1u2[j].entry->transform_data_ptr : NULL;
+		if (td != NULL) g_active_transform_data = td;
+		ng_update_button_states_in_level(app_context, display_list, max_depth, r,
+		                                 (const float (*)[16]) td);
+		g_active_transform_data = std;
+		d->sprite_display_list = display_list;
+		d->sprite_max_depth = max_depth;
+		d->sprite_dl_capacity = display_list_capacity;
+		display_list = sdl;
+		max_depth = smax;
+		display_list_capacity = scap;
+	}
+	ms->stage_x = sx;
+	ms->stage_y = sy;
+}
+
 void actionMouseAvm1ChildrenUnderAvm2(SWFAppContext* app_context, int kind,
-                                      float x, float y)
+                                      float x, float y, int avm2_pick_is_avm1)
 {
 	if (!g_avm1_under_avm2_ready || g_avm1u2_count == 0) return;
 	extern void actionDispatchMCMouseDown(SWFAppContext*);
@@ -25691,12 +25998,17 @@ void actionMouseAvm1ChildrenUnderAvm2(SWFAppContext* app_context, int kind,
 	} else if (kind == AVM1_CHILD_MOUSE_DOWN) {
 		actionDispatchMouseDown(app_context);
 		actionDispatchMCMouseDown(app_context);
+		// swf_core.c's order: click focus, then the press dispatch. A click the
+		// AVM2 side owns only kills a mouse-focused AVM1 field.
+		if (avm2_pick_is_avm1) mouse_click_focus_at(app_context, x, y, 1);
+		else mouse_click_focus_at(app_context, -1e6f, -1e6f, 1);
 		actionDispatchMCPress(app_context);
 	} else {
 		actionDispatchMouseUp(app_context);
 		actionDispatchMCMouseUp(app_context);
 		actionDispatchMCRelease(app_context);
 	}
+	avm1UnderAvm2RunButtons(app_context, avm2_pick_is_avm1);
 	avm1UnderAvm2LeaveChild(&swap);
 }
 
@@ -26627,6 +26939,17 @@ static void tf_get_defaults(MovieClip* mc, TFRun* def) {
 	}
 }
 
+// setNewTextFormat's font NAME (device fonts have no SWF font id) overrides
+// the default face. Returns 1 when applied.
+static int tf_apply_new_format_font(MovieClip* mc, TFRun* def) {
+	if (mc->dynamic_props == NULL) return 0;
+	ActionVar* fn_prop = getProperty((ASObject*)mc->dynamic_props, "_tf_fontName", 12);
+	if (fn_prop == NULL || fn_prop->type != ACTION_STACK_VALUE_STRING || fn_prop->str_size == 0) return 0;
+	size_t n = u16_to_utf8(varGetU16Ptr(fn_prop), fn_prop->str_size, def->font_name, sizeof(def->font_name));
+	def->font_name[n < sizeof(def->font_name) - 1 ? n : sizeof(def->font_name) - 1] = '\0';
+	return 1;
+}
+
 // =============================================
 // HTML Entity decoding helper
 // =============================================
@@ -26715,9 +27038,23 @@ static int tf_parse_font_color(const char* val, u32 val_len, u32* out_color) {
 
 // Parser state for attribute extraction
 static int tf_get_attr(const char* tag_content, u32 tag_len, const char* attr_name, char* val_buf, u32 val_buf_size) {
-	// Case-insensitive attribute search
+	// Case-insensitive attribute search. A duplicated attribute resolves to
+	// its LAST occurrence, even when that one is invalid (Flash; Ruffle
+	// 69a017387 `attributes.iter().rev()`), and the name must start at a
+	// word boundary so `size` never matches inside e.g. `fontsize=`.
 	u32 attr_len = (u32)strlen(attr_name);
-	for (u32 i = 0; i + attr_len < tag_len; i++) {
+	u32 start = 0;
+	int found = 0;
+	for (u32 i = 1; i + attr_len < tag_len; i++) {
+		char pc = tag_content[i-1];
+		if (pc != ' ' && pc != '\t' && pc != '\n' && pc != '\r') continue;
+		if (tag_content[i + attr_len] != '=') continue;
+		if (strncasecmp(&tag_content[i], attr_name, attr_len) != 0) continue;
+		start = i;
+		found = 1;
+	}
+	if (!found) return 0;
+	for (u32 i = start; i + attr_len < tag_len; i++) {
 		int match = 1;
 		for (u32 j = 0; j < attr_len; j++) {
 			char a = tag_content[i+j], b = attr_name[j];
@@ -26982,6 +27319,46 @@ static int tf_parse_html(TFRunTable* table, const char* html, u32 html_len,
 			if (!is_close && tf_tag_is(tname, tname_len, "br")) {
 				ADD_BR_BREAK(cur_para_type);
 				last_break_was_p = 0;
+			} else if (!is_close && swf_version >= 7 && tf_tag_is(tname, tname_len, "img")) {
+				// <img> (SWF7+; SWF<=6 drops it): one placeholder space at
+				// size 2 carrying the image, format stack untouched. Rules:
+				// html_img.h.
+				static const char* const img_attrs[] = {
+					"src", "id", "width", "height", "align", "hspace", "vspace", "checkpolicyfile" };
+				char av[HTML_IMG_SRC_MAX];
+				if (tf_get_attr(tname, tname_len, "src", av, sizeof(av))) {
+					HtmlImg img;
+					html_img_init(&img);
+					for (u32 ai = 0; ai < sizeof(img_attrs) / sizeof(img_attrs[0]); ai++) {
+						if (!tf_get_attr(tname, tname_len, img_attrs[ai], av, sizeof(av))) continue;
+						char dv[HTML_IMG_SRC_MAX];
+						u32 dn = 0, al = (u32)strlen(av);
+						for (u32 ci = 0; ci < al && dn + 4 < sizeof(dv); ) {
+							u32 ob = 0, cons = 0;
+							if (av[ci] == '&' && tf_decode_entity(av, al, ci, &dv[dn], &ob, &cons)) {
+								dn += ob; ci += cons;
+							} else {
+								dv[dn++] = av[ci++];
+							}
+						}
+						dv[dn] = '\0';
+						html_img_set_attr(&img, img_attrs[ai], dv);
+					}
+					FLUSH_RUN();
+					ADD_CH(' ');
+					if (table->run_count < TF_MAX_RUNS) {
+						TFRun* r = &table->runs[table->run_count];
+						*r = fmt_stack[fmt_sp];
+						r->font_height = 2 * 20;
+						r->img = html_img_intern(&img);
+						r->start = table->text_len - 1;
+						r->length = 1;
+						table->run_count++;
+					}
+					run_text_start = table->text_len;
+					cw8_para_start = 0;
+					last_break_was_p = 0;
+				}
 			} else if (!is_close && tf_tag_is(tname, tname_len, "p")) {
 				if (!in_paragraph) {
 					// <p> opens a new paragraph. Bare content before it is included
@@ -27330,6 +27707,10 @@ static int tf_parse_html(TFRunTable* table, const char* html, u32 html_len,
 				all_ws = 0;
 				break;
 			}
+		}
+		// An <img> placeholder space is content, not whitespace.
+		for (u32 ri = 0; all_ws && ri < table->run_count; ri++) {
+			if (table->runs[ri].img != 0 && table->runs[ri].length > 0) all_ws = 0;
 		}
 		if (all_ws) {
 			// Check if there are any tag breaks — if so, keep them (for multiline)
@@ -27726,6 +28107,7 @@ static char* tf_serialize_html(TFRunTable* table, int is_multiline) {
 				    r->bold != nr->bold ||
 				    r->italic != nr->italic ||
 				    r->underline != nr->underline ||
+				    r->img != nr->img ||
 				    strcmp(r->href, nr->href) != 0)
 					break;
 				group_end++;
@@ -27798,12 +28180,20 @@ static char* tf_serialize_html(TFRunTable* table, int is_multiline) {
 			}
 
 			int need_a = (r->href[0] != '\0');
+			// <img> placeholder: one IMG tag per merged group, outside <A>
+			// in SWF7 and inside it in SWF8+ (Ruffle text_format.rs set_span).
+			char imgtag[HTML_IMG_SRC_MAX + HTML_IMG_ID_MAX + 160];
+			imgtag[0] = '\0';
+			if (r->img != 0 && html_img_get(r->img) != NULL)
+				html_img_serialize(html_img_get(r->img), imgtag, sizeof(imgtag));
 
+			if (table->swf_version < 8) TF_EMIT(buf, bp, bsz, imgtag);
 			if (need_a) {
 				char atag[512];
 				snprintf(atag, sizeof(atag), "<A HREF=\"%s\" TARGET=\"%s\">", r->href, r->href_target);
 				TF_EMIT(buf, bp, bsz, atag);
 			}
+			if (table->swf_version >= 8) TF_EMIT(buf, bp, bsz, imgtag);
 
 			if (r->bold) TF_EMIT(buf, bp, bsz, "<B>");
 			if (r->italic) TF_EMIT(buf, bp, bsz, "<I>");
@@ -27945,6 +28335,31 @@ static char* tf_serialize_html(TFRunTable* table, int is_multiline) {
 				char ab[256];
 				snprintf(ab, sizeof(ab), "<FONT COLOR=\"#%06X\"></FONT>", pfmt.color & 0xFFFFFF);
 				TF_EMIT(buf, bp, bsz, ab);
+			}
+		}
+
+		// A paragraph whose last content is an <img> placeholder (size 2) and
+		// that ends in a break: the break character carries the surrounding
+		// font, so Flash's writer opens it (set_font) before dropping the
+		// newline itself -> an empty `<FONT SIZE="12"></FONT>` unless that font
+		// is already on the FONT stack (Ruffle close_font_if_feasible).
+		if (prcnt > 0 && pruns[prcnt - 1]->img != 0 && have_pfmt && pe < table->text_len) {
+			int on_stack = 0;
+			for (int ai = font_ctx_sp; ai >= 0; ai--) {
+				if (strcmp(pfmt.font_name, font_ctx[ai].font_name) == 0 &&
+				    pfmt.font_height == font_ctx[ai].font_height &&
+				    pfmt.color == font_ctx[ai].color &&
+				    pfmt.letter_spacing == font_ctx[ai].letter_spacing &&
+				    pfmt.kerning == font_ctx[ai].kerning) { on_stack = 1; break; }
+			}
+			if (!on_stack) {
+				char ab[256];
+				TF_EMIT(buf, bp, bsz, "<FONT");
+				if (strcmp(pfmt.font_name, CTX.font_name) != 0) { snprintf(ab, sizeof(ab), " FACE=\"%s\"", pfmt.font_name); TF_EMIT(buf, bp, bsz, ab); }
+				if (pfmt.font_height != CTX.font_height) { snprintf(ab, sizeof(ab), " SIZE=\"%d\"", pfmt.font_height / 20); TF_EMIT(buf, bp, bsz, ab); }
+				if (pfmt.color != CTX.color) { snprintf(ab, sizeof(ab), " COLOR=\"#%06X\"", pfmt.color & 0xFFFFFF); TF_EMIT(buf, bp, bsz, ab); }
+				if (pfmt.kerning != CTX.kerning) { snprintf(ab, sizeof(ab), " KERNING=\"%d\"", pfmt.kerning); TF_EMIT(buf, bp, bsz, ab); }
+				TF_EMIT(buf, bp, bsz, "></FONT>");
 			}
 		}
 
@@ -29119,6 +29534,9 @@ int actionIterateTextFieldGlyphs(TextFieldGlyphCallback cb, void* user_data)
 				}
 			}
 		}
+		// An embedFonts field whose font the SWF does not embed draws no
+		// glyphs (Flash; fonts/embed_matching/no_font_found's golden is blank).
+		if (tf_embedded_font_missing(mc, font_id)) continue;
 
 		// Get text color (fallback when no run table or run color missing)
 		u32 text_color = 0x000000;
@@ -29314,6 +29732,15 @@ int actionIterateTextFieldGlyphs(TextFieldGlyphCallback cb, void* user_data)
 				if (_pidx >= 0 && (size_t)_pidx <= max_depth &&
 				    &display_list[_pidx] == (DisplayObject*)p->display_obj) {
 					u32 _ptid = ((DisplayObject*)p->display_obj)->transform_id;
+#ifndef NO_GRAPHICS
+					// A cacheAsBitmap root sprite is repointed at a dynamic
+					// slot for the frame (tag.c cab_snap_world), which has no
+					// CPU row. Its placement is the pre-snap matrix: Ruffle
+					// pixel-snaps device text on its own (EditTextPixelSnapping),
+					// and the unsnapped origin is the closer match
+					// (visual/cache_as_bitmap/text 1200 vs 1380 outliers @128).
+					_ptid = ng_get_original_transform_id((DisplayObject*)p->display_obj);
+#endif
 					float (*_ptd)[16] = ng_entryTransformData((DisplayObject*)p->display_obj);
 					if (!(p->as_set_flags & 1)) px = _ptd[_ptid][12] / 20.0f;
 					if (!(p->as_set_flags & 2)) py = _ptd[_ptid][13] / 20.0f;
@@ -30354,7 +30781,7 @@ static u32 drawing_arc_segments(float radius_tw, float sweep_abs)
 // half-width, used to size the stroke vertex buffer.
 static u32 drawing_stroke_extra_verts(float half_w, u8 joints, u8 caps)
 {
-	u32 n = 6;                                       // miter = 2 triangles
+	u32 n = 9;                                       // MiterClip = 3 triangles
 	if (joints == 0)
 	{
 		u32 j = 3u * drawing_arc_segments(half_w, (float) DRAWING_STROKE_PI);
@@ -30502,19 +30929,40 @@ static u32 drawing_emit_stroke_join(float* out,
 	}
 	float mx = o0x + o1x, my = o0y + o1y;
 	float mlen = sqrtf(mx*mx + my*my);
-	// Miter ratio = 1/cos_half (miter length over stroke half-width); past the
-	// limit the spike is clipped to a bevel. A miter limit below lyon's
-	// MINIMUM_MITER_LIMIT (1.0) is a plain bevel in Ruffle's tessellator.
+	// Miter ratio |m| = 1/cos_half (miter length over stroke half-width). Ruffle
+	// tessellates a miter joint as lyon LineJoin::MiterClip, so the semantics
+	// are lyon's: the full miter survives while |m| <= 2*limit
+	// (stroke.rs miter_limit_is_exceeded: |m|^2 > 4*limit^2); past that the
+	// tip is CLIPPED by a line perpendicular to the bisector at distance
+	// limit*0.5*half_w from the joint (stroke.rs get_clip_intersections), not
+	// beveled. A miter limit below lyon's MINIMUM_MITER_LIMIT (1.0) is a plain
+	// bevel in Ruffle's tessellator.
 	if (joints == 1 && mlen > 1e-4f && miter_limit >= 1.0f) {
 		float mhx = mx/mlen, mhy = my/mlen;
 		float cos_half = mhx*o0x + mhy*o0y;      // cos(half the corner angle)
-		if (cos_half * miter_limit > 1.0f) {
+		if (cos_half > 1e-6f && 1.0f <= 4.0f * miter_limit * miter_limit * cos_half * cos_half) {
 			float miter_len = half_w / cos_half;
 			float Mx = vx + mhx*miter_len;
 			float My = vy + mhy*miter_len;
 			out[0]=vx;  out[1]=vy;   out[2]=p0x; out[3]=p0y;  out[4]=Mx;  out[5]=My;
 			out[6]=vx;  out[7]=vy;   out[8]=Mx;  out[9]=My;   out[10]=p1x; out[11]=p1y;
 			return 6;
+		} else {
+			// MiterClip: slide each offset corner p0/p1 along its edge
+			// direction (t0/t1) until it reaches the clip line; the clipped
+			// tip is the fan vx, p0, c0, c1, p1 (3 triangles).
+			float dclip = miter_limit * 0.5f * half_w, base = half_w * cos_half;
+			float t0x = -o0y, t0y = o0x, t1x = -o1y, t1y = o1x;
+			float k0 = t0x*mhx + t0y*mhy, k1 = t1x*mhx + t1y*mhy;
+			if (fabsf(k0) > 1e-6f && fabsf(k1) > 1e-6f) {
+				float s0 = (dclip - base) / k0, s1 = (dclip - base) / k1;
+				float c0x = p0x + t0x*s0, c0y = p0y + t0y*s0;
+				float c1x = p1x + t1x*s1, c1y = p1y + t1y*s1;
+				out[0]=vx;  out[1]=vy;   out[2]=p0x; out[3]=p0y;  out[4]=c0x; out[5]=c0y;
+				out[6]=vx;  out[7]=vy;   out[8]=c0x; out[9]=c0y;  out[10]=c1x; out[11]=c1y;
+				out[12]=vx; out[13]=vy;  out[14]=c1x; out[15]=c1y; out[16]=p1x; out[17]=p1y;
+				return 9;
+			}
 		}
 	}
 	// Bevel fallback (sharp angle or near-degenerate bisector).
@@ -36959,11 +37407,6 @@ void actionGetURL(SWFAppContext* app_context, const char* url, const char* targe
 // to identify which broadcaster object they operate on.
 // ============================================================================
 
-// AS2 abstract equality for listener dedup/remove. Defers to the full
-// `actionEquals2` (ECMA-262 11.9.3 with object → primitive via valueOf), which
-// handles null/undefined coercion and `obj.valueOf() == primitive` comparisons
-// that the AsBroadcaster tests rely on (e.g. `removeListener('yes I am')`
-// matching an object whose `valueOf` returns `'yes I am'`).
 // Resolve the broadcaster the three builtins below operate on. `this_obj` is
 // the receiver on the OBJECT dispatch arm; on the MOVIECLIP arm actionCallMethod
 // passes this_obj = NULL and communicates the receiver via g_event_this_mc
@@ -36982,126 +37425,139 @@ static ASObject* broadcasterReceiver(void* this_obj)
     return receiver;
 }
 
-static int listenerAbstractEq(SWFAppContext* app_context, ActionVar* a, ActionVar* b) {
-    pushVar(app_context, a);
-    pushVar(app_context, b);
-    actionEquals2(app_context);
-    int eq = (STACK_TOP_TYPE == ACTION_STACK_VALUE_BOOLEAN) && (STACK_TOP_VALUE != 0);
-    POP();
-    return eq;
+// The receiver of an AsBroadcaster method as a value. Same object the old
+// raw-access builtins used (broadcasterReceiver), so internal broadcasters and
+// MovieClip-backed ones (TextField instances) keep their receiver; an Array
+// receiver (`[].addListener = ...`) stays an Array.
+static ActionVar asBroadcasterThis(void* this_obj)
+{
+    ActionVar self = {0};
+    self.type = ACTION_STACK_VALUE_UNDEFINED;
+    if (this_obj != NULL && g_call_this_type == ACTION_STACK_VALUE_ARRAY) {
+        self.type = ACTION_STACK_VALUE_ARRAY;
+        self.data.numeric_value = (u64)(uintptr_t) this_obj;
+        return self;
+    }
+    ASObject* receiver = broadcasterReceiver(this_obj);
+    if (receiver != NULL) {
+        self.type = ACTION_STACK_VALUE_OBJECT;
+        self.data.numeric_value = (u64)(uintptr_t) receiver;
+    }
+    return self;
 }
 
+// AsBroadcaster.addListener — a port of AsBroadcaster.as (Flash implements it
+// in ActionScript; Ruffle c2a878a68):
+//     this.removeListener(listener);
+//     this._listeners.push(listener);
+//     return true;
+// Both steps dispatch through the receiver, so overriding removeListener or
+// the listeners' push is observable, and an already-registered listener moves
+// to the end. A receiver without _listeners silently does nothing.
 static ActionVar builtin_broadcaster_addListener(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
     (void)registers;
-    ASObject* receiver = broadcasterReceiver(this_obj);
+    ActionVar self = asBroadcasterThis(this_obj);
+    ActionVar listener = (arg_count >= 1) ? args[0] : as_undef();
 
-    ActionVar result = {0};
-    result.type = ACTION_STACK_VALUE_BOOLEAN;
-    VAL(u64, &result.data.numeric_value) = 1;
-
-    if (!receiver) return result;
-
-    // Listener is args[0], or undefined if no args
-    ActionVar undef_listener = {0};
-    undef_listener.type = ACTION_STACK_VALUE_UNDEFINED;
-    ActionVar* new_listener = (arg_count >= 1) ? &args[0] : &undef_listener;
-
-    // Flash's AsBroadcaster.addListener semantics (mirrors Ruffle
-    // core/src/avm1/globals/as_broadcaster.rs `add_listener`):
-    //   1) Look up `this._listeners`. Only proceed if it's an Object/Array.
-    //      Do NOT auto-create — `obj.addListener()` on an object that wasn't
-    //      AsBroadcaster.initialize'd should silently no-op (Flash test
-    //      AsBroadcaster.as:144,150 expects `o._listeners` to remain undefined).
-    //   2) If a listener equal to `new_listener` already exists, leave the
-    //      array as-is (Flash actually moves it to the end via removeListener+
-    //      push, which matches our "found → shift+append" behavior; Ruffle
-    //      replaces in-place — both diverge from the other on
-    //      AsBroadcaster.as:216 etc, but our move-to-end matches Flash).
-    //   3) Otherwise append at the end.
-    ActionVar* listeners_prop = getPropertyWithPrototype(receiver, "_listeners", 10);
-    if (!listeners_prop) return result;
-    if (listeners_prop->type != ACTION_STACK_VALUE_ARRAY) {
-        // Non-Array _listeners (e.g. user replaced it with a plain Object):
-        // Ruffle uses `length`/indexed access + virtual `push` here. We don't
-        // implement that path — return true and skip mutation. Test
-        // AsBroadcaster.as:162-164 (which exercises this) is also failing in
-        // Ruffle's expected output, so the diff stays within Ruffle's set.
-        return result;
-    }
-    ASArray* arr = (ASArray*) listeners_prop->data.numeric_value;
-    if (!arr) return result;
-
-    // Find first match using abstract equality (null == undefined in AS2)
-    int found_idx = -1;
-    for (u32 i = 0; i < arr->length; i++) {
-        ActionVar* elem = getArrayElement(arr, i);
-        if (elem && listenerAbstractEq(app_context, elem, new_listener)) {
-            found_idx = (int)i;
-            break;
-        }
-    }
-
-    if (found_idx >= 0) {
-        // Re-adding existing listener: remove first occurrence and append to end.
-        // Flash semantics — the listener is moved to the last position.
-        for (u32 j = (u32)found_idx; j + 1 < arr->length; j++) {
-            ActionVar* next = getArrayElement(arr, j + 1);
-            if (next) setArrayElement(app_context, arr, j, next);
-        }
-        arr->length--;
-    }
-    setArrayElement(app_context, arr, arr->length, new_listener);
-    return result;
+    (void) as_call_method(app_context, &self, "removeListener", &listener, 1);
+    ActionVar listeners = as_get(app_context, &self, "_listeners");
+    (void) as_call_method(app_context, &listeners, "push", &listener, 1);
+    return as_bool(1);
 }
 
-
+// AsBroadcaster.removeListener — port of AsBroadcaster.as:
+//     var listeners = this._listeners;
+//     for (var i = 0; i < listeners.length; i++)
+//         if (listeners[i] == listener) { listeners.splice(i, 1); return true; }
+//     return false;
+// `length` is re-read every iteration and elements are compared with `==`
+// (null == undefined; objects vs primitives run valueOf), all through getters.
 static ActionVar builtin_broadcaster_removeListener(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
     (void)registers;
-    ASObject* receiver = broadcasterReceiver(this_obj);
+    ActionVar self = asBroadcasterThis(this_obj);
+    ActionVar listener = (arg_count >= 1) ? args[0] : as_undef();
 
-    ActionVar false_result = {0};
-    false_result.type = ACTION_STACK_VALUE_BOOLEAN;
-    VAL(u64, &false_result.data.numeric_value) = 0;
-
-    if (!receiver) return false_result;
-
-    ActionVar* listeners_prop = getPropertyWithPrototype(receiver, "_listeners", 10);
-    if (!listeners_prop || listeners_prop->type != ACTION_STACK_VALUE_ARRAY) return false_result;
-    ASArray* arr = (ASArray*) listeners_prop->data.numeric_value;
-    if (!arr) return false_result;
-
-    // Target is args[0], or undefined if no args
-    ActionVar undef_target = {0};
-    undef_target.type = ACTION_STACK_VALUE_UNDEFINED;
-    ActionVar* target = (arg_count >= 1) ? &args[0] : &undef_target;
-
-    // Find and remove using abstract equality (null == undefined)
-    for (u32 i = 0; i < arr->length; i++) {
-        ActionVar* elem = getArrayElement(arr, i);
-        if (elem && listenerAbstractEq(app_context, elem, target)) {
-            for (u32 j = i; j + 1 < arr->length; j++) {
-                ActionVar* next = getArrayElement(arr, j + 1);
-                if (next) setArrayElement(app_context, arr, j, next);
-            }
-            arr->length--;
-            ActionVar r = {0}; r.type = ACTION_STACK_VALUE_BOOLEAN; VAL(u64, &r.data.numeric_value) = 1;
-            return r;
+    ActionVar listeners = as_get(app_context, &self, "_listeners");
+    for (u32 i = 0; ; i++) {
+        ActionVar iv = as_num((double) i);
+        ActionVar len = as_get(app_context, &listeners, "length");
+        if (!as_less(app_context, &iv, &len)) break;
+        ActionVar elem = as_get_index(app_context, &listeners, i);
+        if (as_equals(app_context, &elem, &listener)) {
+            ActionVar splice_args[2] = { as_num((double) i), as_num(1.0) };
+            (void) as_call_method(app_context, &listeners, "splice", splice_args, 2);
+            return as_bool(1);
         }
     }
-
-    return false_result;
+    return as_bool(0);
 }
 
-static ActionVar builtin_broadcaster_broadcastMessage(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+// broadcastMessage's listener snapshot (Ruffle broadcast_internal: `length` and
+// every element are read as OWN DATA properties — no getters, no __resolve, no
+// prototype — before any listener runs, so listeners added or removed during
+// the broadcast don't change who gets called). Returns a HALLOC'd array the
+// caller FREEs (NULL when empty).
+static ActionVar* broadcastSnapshotListeners(SWFAppContext* app_context, ActionVar* listeners_var, u32* out_count)
 {
-    (void)registers;
+    *out_count = 0;
+    if (listeners_var->type == ACTION_STACK_VALUE_ARRAY) {
+        ASArray* arr = (ASArray*)(uintptr_t) listeners_var->data.numeric_value;
+        if (arr == NULL || arr->length == 0) return NULL;
+        u32 n = arr->length;
+        if (n > (1u << 20)) n = 1u << 20;
+        ActionVar* snap = (ActionVar*) HALLOC(sizeof(ActionVar) * n);
+        for (u32 i = 0; i < n; i++) {
+            ActionVar* e = getArrayElement(arr, i);
+            if (e != NULL) snap[i] = *e;
+            else { memset(&snap[i], 0, sizeof(ActionVar)); snap[i].type = ACTION_STACK_VALUE_UNDEFINED; }
+        }
+        *out_count = n;
+        return snap;
+    }
+
+    ASObject* bag = NULL;
+    if (listeners_var->type == ACTION_STACK_VALUE_OBJECT) {
+        bag = (ASObject*)(uintptr_t) listeners_var->data.numeric_value;
+    } else if (listeners_var->type == ACTION_STACK_VALUE_FUNCTION) {
+        ASFunction* f = (ASFunction*)(uintptr_t) listeners_var->data.numeric_value;
+        if (f != NULL) bag = f->own_props;
+    } else if (listeners_var->type == ACTION_STACK_VALUE_MOVIECLIP) {
+        MovieClip* mc = (MovieClip*)(uintptr_t) listeners_var->data.numeric_value;
+        if (mc != NULL) bag = (ASObject*) mc->dynamic_props;
+    }
+    if (bag == NULL) return NULL;
+
+    ASProperty* lp = findPropertyRaw(bag, "length", 6);
+    if (lp == NULL || lp->getter != NULL) return NULL;
+    double d = 0.0;
+    if (lp->value.type == ACTION_STACK_VALUE_F64 || lp->value.type == ACTION_STACK_VALUE_F32 ||
+        lp->value.type == ACTION_STACK_VALUE_BOOLEAN || lp->value.type == ACTION_STACK_VALUE_STRING)
+        d = varToDoubleSimple(&lp->value);
+    if (isnan(d) || d < 1.0) return NULL;
+    u32 n = (d > (double)(1u << 20)) ? (1u << 20) : (u32) d;
+    ActionVar* snap = (ActionVar*) HALLOC(sizeof(ActionVar) * n);
+    for (u32 i = 0; i < n; i++) {
+        char key[16];
+        int kl = snprintf(key, sizeof(key), "%u", i);
+        ASProperty* ep = findPropertyRaw(bag, key, (u32) kl);
+        if (ep != NULL && ep->getter == NULL) snap[i] = ep->value;
+        else { memset(&snap[i], 0, sizeof(ActionVar)); snap[i].type = ACTION_STACK_VALUE_UNDEFINED; }
+    }
+    *out_count = n;
+    return snap;
+}
+
+// ASnative(101, 12): Flash's native broadcast core, shared by every
+// broadcaster (AsBroadcaster.as keeps it native). `self` is the broadcaster.
+// No event-name argument at all returns undefined; a present `undefined`
+// coerces like any string.
+static ActionVar broadcastMessageCore(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar self)
+{
     ActionVar undef = {0};
     undef.type = ACTION_STACK_VALUE_UNDEFINED;
-
-    ASObject* receiver = broadcasterReceiver(this_obj);
-    if (!receiver || arg_count < 1) return undef;
+    if (self.type == ACTION_STACK_VALUE_UNDEFINED || arg_count < 1) return undef;
 
     // Convert method name to UTF-8 string. Push to stack and use convertString.
     pushVar(app_context, &args[0]);
@@ -37119,26 +37575,27 @@ static ActionVar builtin_broadcaster_broadcastMessage(SWFAppContext* app_context
 
     int method_name_len = (int)strlen(method_name);
 
-    // Get the _listeners array
-    ActionVar* listeners_prop = getPropertyWithPrototype(receiver, "_listeners", 10);
-    if (!listeners_prop || listeners_prop->type != ACTION_STACK_VALUE_ARRAY) {
-        // No (or non-array) _listeners — return undefined (Flash behavior).
-        return undef;
-    }
-    ASArray* arr = (ASArray*)(uintptr_t)listeners_prop->data.numeric_value;
-    if (!arr || arr->length == 0) {
-        // Empty listener list — return undefined (Flash behavior).
-        return undef;
-    }
+    // `this._listeners` is an ordinary get (getters and __resolve fire); any
+    // non-object means no listeners. The listeners themselves are snapshotted
+    // up front from own data properties (broadcastSnapshotListeners).
+    ActionVar listeners_var = as_get(app_context, &self, "_listeners");
+    if (!as_is_object(&listeners_var)) return undef;
+    u32 snap_count = 0;
+    ActionVar* snap = broadcastSnapshotListeners(app_context, &listeners_var, &snap_count);
+    int has_listeners = 0;
 
     // Extra args to pass to the method (args[1..])
     u32 extra_count = arg_count > 1 ? arg_count - 1 : 0;
     ActionVar* extra_args = extra_count > 0 ? &args[1] : NULL;
 
     // Call method on each listener
-    for (u32 i = 0; i < arr->length; i++) {
-        ActionVar* elem = getArrayElement(arr, i);
-        if (!elem) continue;
+    for (u32 i = 0; i < snap_count; i++) {
+        ActionVar* elem = &snap[i];
+
+        // null/undefined are skipped and don't count as listeners.
+        if (elem->type == ACTION_STACK_VALUE_UNDEFINED || elem->type == ACTION_STACK_VALUE_NULL)
+            continue;
+        has_listeners = 1;
 
         ASObject* listener_obj = NULL;
         MovieClip* listener_mc = NULL;
@@ -37156,7 +37613,15 @@ static ActionVar builtin_broadcaster_broadcastMessage(SWFAppContext* app_context
             if (listener_func && listener_func->own_props)
                 listener_obj = listener_func->own_props;
         } else {
-            continue; // skip null/undefined/primitive listeners
+            // Primitive listener: Flash boxes it, so its prototype's method runs
+            // with a wrapper `this`. The primitive CallMethod arms do exactly
+            // that boxing. An empty name would call the box itself — never a
+            // function, so nothing happens.
+            if (method_name_len > 0) {
+                ActionVar prim = *elem;
+                (void) as_call_method(app_context, &prim, method_name, extra_args, extra_count);
+            }
+            continue;
         }
 
         ASFunction* func = NULL;
@@ -37312,11 +37777,33 @@ static ActionVar builtin_broadcaster_broadcastMessage(SWFAppContext* app_context
         }
         if (super_pushed) popSuperContext();
     }
+    if (snap != NULL) FREE(snap);
 
-    ActionVar true_result = {0};
-    true_result.type = ACTION_STACK_VALUE_BOOLEAN;
-    VAL(u64, &true_result.data.numeric_value) = 1;
-    return true_result;
+    // true when at least one non-null listener was present, else undefined.
+    return has_listeners ? as_bool(1) : undef;
+}
+
+// Entry for the runtime's own C callers (Key/Mouse/Selection/MCL/TextField
+// event dispatch): `this_obj` is always the broadcaster's ASObject (or NULL for
+// the MovieClip arm), never an ASArray, so g_call_this_type is not consulted.
+static ActionVar builtin_broadcaster_broadcastMessage(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+    (void)registers;
+    ActionVar self = as_undef();
+    ASObject* receiver = broadcasterReceiver(this_obj);
+    if (receiver != NULL) {
+        self.type = ACTION_STACK_VALUE_OBJECT;
+        self.data.numeric_value = (u64)(uintptr_t) receiver;
+    }
+    return broadcastMessageCore(app_context, args, arg_count, self);
+}
+
+// Entry for the script-visible broadcastMessage function objects, where the
+// dispatcher may hand over an Array receiver.
+static ActionVar builtin_broadcaster_broadcastMessage_as(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
+{
+    (void)registers;
+    return broadcastMessageCore(app_context, args, arg_count, asBroadcasterThis(this_obj));
 }
 
 // Static function objects for AsBroadcaster methods
@@ -38376,7 +38863,7 @@ static void initAsBroadcasterFuncs(SWFAppContext* app_context)
     memset(&g_ab_broadcastMessage_func, 0, sizeof(ASFunction));
     strncpy(g_ab_broadcastMessage_func.name, "broadcastMessage", 255);
     g_ab_broadcastMessage_func.function_type = 2;
-    g_ab_broadcastMessage_func.advanced_func = (Function2Ptr)builtin_broadcaster_broadcastMessage;
+    g_ab_broadcastMessage_func.advanced_func = (Function2Ptr)builtin_broadcaster_broadcastMessage_as;
 
     setupNativeFuncOwnProps(app_context, &g_ab_addListener_func);
     setupNativeFuncOwnProps(app_context, &g_ab_removeListener_func);
@@ -39304,40 +39791,49 @@ static void markAsBroadcasterSWF6(ASObject* obj)
     }
 }
 
-// AsBroadcaster.initialize(obj) — static method callable from AS2.
-// Installs _listeners, addListener, removeListener, broadcastMessage on the target.
+// AsBroadcaster.initialize(broadcaster) — port of AsBroadcaster.as:
+//     broadcaster.broadcastMessage = ASnative(101, 12);   // a NEW native each time
+//     broadcaster.addListener = AsBroadcaster.addListener;
+//     broadcaster.removeListener = AsBroadcaster.removeListener;
+//     broadcaster._listeners = [];
+//     ASSetPropFlags(broadcaster, "broadcastMessage,addListener,removeListener,_listeners", 3);
+// Every assignment goes through setters/watchers in that order, and
+// `AsBroadcaster` is re-read from the current _global for each method (so a
+// replaced AsBroadcaster — getters, __resolve — is observable). Returns
+// undefined.
 static ActionVar builtin_asbroadcaster_initialize(SWFAppContext* app_context, ActionVar* args, u32 arg_count, ActionVar* registers, void* this_obj)
 {
     (void)registers; (void)this_obj;
-    ActionVar undef = {0}; undef.type = ACTION_STACK_VALUE_UNDEFINED;
-    if (arg_count < 1) return undef;
-
-    ASObject* target = NULL;
-    if (args[0].type == ACTION_STACK_VALUE_OBJECT || args[0].type == ACTION_STACK_VALUE_ARRAY) {
-        target = (ASObject*)(uintptr_t)args[0].data.numeric_value;
-    } else if (args[0].type == ACTION_STACK_VALUE_FUNCTION) {
-        ASFunction* f = lookupFunctionFromVar(&args[0]);
-        if (f && f->own_props) target = f->own_props;
-    } else if (args[0].type == ACTION_STACK_VALUE_MOVIECLIP) {
-        MovieClip* mc = (MovieClip*)(uintptr_t)args[0].data.numeric_value;
-        // If the MC reference is stale (removeMovieClip + recreate at the
-        // same name pattern), rebind it to the live MC at the same path so
-        // `AsBroadcaster.initialize(staleRef)` after a recreate succeeds.
-        // Mirrors Flash's "soft" MovieClip references (AsBroadcaster.as:173:
-        // dang re-resolved to depth-2 'dangling' after removeMovieClip +
-        // createEmptyMovieClip('dangling', 2)).
-        if (mc != NULL) {
-            mc = reResolveDeadBaseClip(app_context, mc);
-        }
-        if (mc != NULL && mc->dynamic_props == NULL && mc->depth != INT_MIN) {
-            mc->dynamic_props = allocDynamicProps(app_context, 4);
-        }
-        if (mc && mc->dynamic_props) target = (ASObject*) mc->dynamic_props;
+    ActionVar broadcaster = (arg_count >= 1) ? args[0] : as_undef();
+    if (broadcaster.type == ACTION_STACK_VALUE_MOVIECLIP && broadcaster.data.numeric_value != 0) {
+        // A stale MC reference (removeMovieClip + recreate at the same path)
+        // rebinds to the live clip: Flash's "soft" MovieClip references
+        // (gnash AsBroadcaster.as:173).
+        MovieClip* mc = (MovieClip*)(uintptr_t) broadcaster.data.numeric_value;
+        mc = reResolveDeadBaseClip(app_context, mc);
+        if (mc != NULL) broadcaster.data.numeric_value = (u64)(uintptr_t) mc;
     }
-    if (!target) return undef;
 
-    installAsBroadcaster(app_context, target);
-    return undef;
+    ActionVar bm_var = newBroadcastMessageFunc(app_context);
+    as_set(app_context, &broadcaster, "broadcastMessage", &bm_var);
+
+    ActionVar ab = as_get_global(app_context, "AsBroadcaster");
+    ActionVar add = as_get(app_context, &ab, "addListener");
+    as_set(app_context, &broadcaster, "addListener", &add);
+    ab = as_get_global(app_context, "AsBroadcaster");
+    ActionVar rem = as_get(app_context, &ab, "removeListener");
+    as_set(app_context, &broadcaster, "removeListener", &rem);
+
+    // `[]`: an empty array literal, built exactly as ActionInitArray builds one.
+    ActionVar zero = as_num(0.0), listeners;
+    pushVar(app_context, &zero);
+    actionInitArray(app_context);
+    popVar(app_context, &listeners);
+    as_set(app_context, &broadcaster, "_listeners", &listeners);
+
+    as_set_prop_flags(app_context, &broadcaster,
+                      "broadcastMessage,addListener,removeListener,_listeners", 3);
+    return as_undef();
 }
 
 // Stub constructors: classes that need to exist as globals with a prototype
@@ -41342,6 +41838,11 @@ static void initContextMenuPrototype(SWFAppContext* app_context, ASFunction* cto
 	hv.type = ACTION_STACK_VALUE_FUNCTION;
 	hv.data.numeric_value = (u64) &g_cm_hideBuiltIn_func;
 	setPropertyWithFlags(app_context, ctor->prototype_obj, "hideBuiltInItems", 16, &hv, mflags);
+	// ASSetPropFlags(o, ..., 1027): DONT_ENUM, DONT_DELETE, visible to SWF 7+.
+	ActionVar pv = {0};
+	pv.type = ACTION_STACK_VALUE_OBJECT;
+	pv.data.numeric_value = (u64) ctor->prototype_obj;
+	as_set_prop_flags(app_context, &pv, "copy,hideBuiltInItems", 1027);
 }
 
 // ContextMenuItem.prototype: copy
@@ -41370,6 +41871,11 @@ static void initContextMenuItemPrototype(SWFAppContext* app_context, ASFunction*
 	fv.type = ACTION_STACK_VALUE_FUNCTION;
 	fv.data.numeric_value = (u64) &g_cmi_copy_func;
 	setPropertyWithFlags(app_context, ctor->prototype_obj, "copy", 4, &fv, mflags);
+	// ASSetPropFlags(o, ..., 1027): DONT_ENUM, DONT_DELETE, visible to SWF 7+.
+	ActionVar pv = {0};
+	pv.type = ACTION_STACK_VALUE_OBJECT;
+	pv.data.numeric_value = (u64) ctor->prototype_obj;
+	as_set_prop_flags(app_context, &pv, "copy", 1027);
 }
 
 // LoadVars.decode(queryString): parse URL-encoded string into own properties
@@ -43387,6 +43893,12 @@ static void ensureGlobalInit(SWFAppContext* app_context)
 			strncpy(g_stub_ctors[i].name, stub_names[i], 255);
 			g_stub_ctors[i].function_type = 1;
 		}
+		// ContextMenu / ContextMenuItem are ActionScript classes in Flash: their
+		// constructor bodies run under `new` and when called as functions.
+		g_stub_ctors[4].function_type = 2;
+		g_stub_ctors[4].advanced_func = (Function2Ptr) builtin_contextmenu_ctor;
+		g_stub_ctors[5].function_type = 2;
+		g_stub_ctors[5].advanced_func = (Function2Ptr) builtin_contextmenuitem_ctor;
 	}
 
 	// ---- Static global objects (Accessibility, Key, Mouse, Selection, Stage) ----
@@ -43799,6 +44311,7 @@ static void ensureGlobalInit(SWFAppContext* app_context)
 #endif
 	REG_FUNC("String", 6, &g_ctors[2]);
 	REG_FUNC("Array", 5, &g_ctors[1]);
+	g_array_ctor_registered = &g_ctors[1];
 	REG_OBJ("Math", 4, actionMathGetObject(app_context));
 	REG_FUNC("Sound", 5, &g_stub_ctors[14]);
 	REG_FUNC("XMLNode", 7, &g_xmlnode_constructor);
@@ -44848,7 +45361,32 @@ static ASObject* getVersionedArrayProto(SWFAppContext* app_context)
 // (`_root['_level0']`, `_root._level`) still resolves to root.
 int g_path_walk_level0_undef = 0;
 
+// SWF<=5: a reference to a non-MovieClip display object resolves to its first
+// MovieClip ancestor (Ruffle object_reference.rs process_swf5_references,
+// applied on every AVM1 stack push, activation.rs stack_push). So in SWF5
+// `var tf = _root[name]` on a text field IS `_root`, and tf.htmlText/tf.text
+// are plain properties of the clip (avm1/html_text_img_parsing_swf5: Flash
+// prints TEXT= empty and HTML= the raw source). Applied to the results of
+// GetMember / GetVariable, which is where display-object refs are produced.
+static void swf5TextFieldRefToClip(SWFAppContext* app_context)
+{
+	if (g_swf_version > 5 || STACK_TOP_TYPE != ACTION_STACK_VALUE_MOVIECLIP) return;
+	MovieClip* mc = (MovieClip*) STACK_TOP_VALUE;
+	if (mc == NULL || !(mc->ng_textfield_idx >= 0 || mc->ng_textfield_idx == -2)) return;
+	MovieClip* p = mc->parent;
+	while (p != NULL && (p->ng_textfield_idx >= 0 || p->ng_textfield_idx == -2)) p = p->parent;
+	if (p != NULL) STACK_TOP_VALUE = (u64) p;
+}
+
+static void actionGetVariableImpl(SWFAppContext* app_context);
+
 void actionGetVariable(SWFAppContext* app_context)
+{
+	actionGetVariableImpl(app_context);
+	swf5TextFieldRefToClip(app_context);
+}
+
+static void actionGetVariableImpl(SWFAppContext* app_context)
 {
 	// Clear callable_this tracking — will be set if value is found on a WITH scope
 	g_last_callable_this_set = 0;
@@ -51525,6 +52063,186 @@ void actionGetURL2(SWFAppContext* app_context, u8 send_vars_method, u8 load_targ
 	(void)send_vars_method;
 }
 
+// Arrays built by literals, `arguments`, String.split and Array() called as a
+// function resolve `_global.Array` AT CREATION (Ruffle dd4e73d59,
+// ArrayBuilder::new; we follow its FP24 branch): own `__proto__ =
+// _global.Array.prototype` and own `constructor = _global.Array`. Both are read
+// as DATA: attributes are ignored and accessors are not called (the data slot
+// survives an addProperty on the same name). With no class there is neither;
+// with a class but no prototype there is only `constructor`. `new Array()`
+// keeps the inherited constructor and does not come here.
+//
+// The caller has already installed default_proto as `__proto__` (or, with
+// props == NULL, relies on the builtin Array.prototype fallback). Fast path —
+// `_global.Array` is a function whose prototype is that same object — writes
+// nothing: the own `constructor` stays virtual in arr->virt_ctor (functions are
+// never freed, see the g_gc_fn_head root walk) and is materialised on write.
+// Otherwise both slots go into props. Pinned by avm1/array_constructor and
+// gnash array.as:1755-1793.
+static void arrayResolveGlobalCtor(SWFAppContext* app_context, ASArray* arr,
+                                   ASObject* default_proto, u32 proto_flags)
+{
+	if (arr == NULL) return;
+	ASObject* g = getActiveGlobal();
+	if (g == NULL || g_array_ctor_registered == NULL)
+	{
+		// _global not built yet (ensureGlobalInit is lazy; any script access
+		// to `_global` runs it first), so `_global.Array` is still the builtin.
+		if (g_array_proto_methods_init)
+			arr->virt_ctor = &g_array_constructor_static;
+		return;
+	}
+	ASProperty* gp = findPropertyRaw(g, "Array", 5);
+	ActionVar ctor = {0};
+	ctor.type = ACTION_STACK_VALUE_UNDEFINED;
+	if (gp != NULL &&
+	    (gp->value.type == ACTION_STACK_VALUE_FUNCTION || gp->value.type == ACTION_STACK_VALUE_OBJECT) &&
+	    gp->value.data.numeric_value != 0)
+		ctor = gp->value;
+
+	// The engine registers `_global.Array` as its own ASFunction, but the Array
+	// that scripts observe (`Array`, `Array.prototype.constructor`) is
+	// g_array_constructor_static; report that one.
+	if (ctor.type == ACTION_STACK_VALUE_FUNCTION &&
+	    g_array_ctor_registered != NULL &&
+	    ctor.data.numeric_value == (u64) g_array_ctor_registered && g_array_proto_methods_init)
+		ctor.data.numeric_value = (u64) &g_array_constructor_static;
+
+	ActionVar proto = {0};
+	int has_proto = 0;
+	if (ctor.type == ACTION_STACK_VALUE_FUNCTION)
+	{
+		ASFunction* fn = (ASFunction*) ctor.data.numeric_value;
+		if (fn->prototype_obj != NULL)
+		{
+			if (fn->prototype_obj == default_proto)
+			{
+				arr->virt_ctor = fn;
+				return;
+			}
+			proto.type = ACTION_STACK_VALUE_OBJECT;
+			proto.data.numeric_value = (u64) fn->prototype_obj;
+			has_proto = 1;
+		}
+		else
+		{
+			// A primitive `fn.prototype = 8` lives in own_props (the data
+			// slot survives an addProperty on the same name, as in Ruffle).
+			ASProperty* pp = (fn->own_props != NULL) ? findPropertyRaw(fn->own_props, "prototype", 9) : NULL;
+			if (pp != NULL && pp->value.type != ACTION_STACK_VALUE_UNDEFINED)
+			{
+				proto = pp->value;
+				has_proto = 1;
+			}
+			else if (pp == NULL)
+			{
+				// Never read yet: GetMember creates the lazy prototype object.
+				pushVar(app_context, &ctor);
+				PUSH_STR("prototype", 9);
+				actionGetMember(app_context);
+				popVar(app_context, &proto);
+				has_proto = (proto.type != ACTION_STACK_VALUE_UNDEFINED);
+			}
+		}
+	}
+	else if (ctor.type == ACTION_STACK_VALUE_OBJECT)
+	{
+		ASProperty* pp = findPropertyRaw((ASObject*) ctor.data.numeric_value, "prototype", 9);
+		if (pp != NULL)
+		{
+			proto = pp->value;
+			has_proto = 1;
+		}
+	}
+
+	if (arr->props == NULL)
+	{
+		arr->props = allocObject(app_context, 4);
+		retainObject(arr->props);
+	}
+	arr->no_proto_fallback = 1;
+	if (has_proto)
+		setPropertyWithFlags(app_context, arr->props, "__proto__", 9, &proto, proto_flags);
+	else
+		deleteProperty(app_context, arr->props, "__proto__", 9);
+	if (ctor.type != ACTION_STACK_VALUE_UNDEFINED)
+		setPropertyWithFlags(app_context, arr->props, "constructor", 11, &ctor,
+		                     PROPERTY_FLAG_WRITABLE);
+}
+
+// Write/flag paths see a real slot: move a virtual own `constructor` into props.
+static void arrayMaterializeVirtCtor(SWFAppContext* app_context, ASArray* arr)
+{
+	if (arr == NULL || arr->virt_ctor == NULL) return;
+	if (arr->props == NULL)
+	{
+		arr->props = allocObject(app_context, 4);
+		retainObject(arr->props);
+	}
+	ActionVar cv = {0};
+	cv.type = ACTION_STACK_VALUE_FUNCTION;
+	cv.data.numeric_value = (u64) arr->virt_ctor;
+	arr->virt_ctor = NULL;
+	if (findPropertyRaw(arr->props, "constructor", 11) == NULL)
+		setPropertyWithFlags(app_context, arr->props, "constructor", 11, &cv, PROPERTY_FLAG_WRITABLE);
+}
+
+// Push a natively built array (props == NULL, so it inherits the builtin
+// Array.prototype) after resolving the creation-time `_global.Array`.
+static void pushCreatedArray(SWFAppContext* app_context, ASArray* arr)
+{
+	initArrayPrototypeMethods(app_context);
+	arrayResolveGlobalCtor(app_context, arr, g_array_prototype, PROPERTY_FLAGS_DONTENUM);
+	PUSH(ACTION_STACK_VALUE_ARRAY, (u64) arr);
+}
+
+// Array(...) called as a function (by name, through an alias, or
+// `Array.call`): same element rules as `new Array(...)`, but the result is built
+// through arrayResolveGlobalCtor like a literal (Ruffle dd4e73d59).
+static void pushArrayCalledAsFunction(SWFAppContext* app_context, ActionVar* args, u32 num_args)
+{
+	if (num_args == 0)
+	{
+		// Array() — empty array
+		ASArray* arr = allocArray(app_context, 4);
+		arr->length = 0;
+		pushCreatedArray(app_context, arr);
+	}
+	else if (num_args == 1 &&
+	         (args[0].type == ACTION_STACK_VALUE_F32 ||
+	          args[0].type == ACTION_STACK_VALUE_F64))
+	{
+		// Array(length)
+		double length_d = (args[0].type == ACTION_STACK_VALUE_F32) ?
+			(double) VAL(float, &args[0].data.numeric_value) :
+			VAL(double, &args[0].data.numeric_value);
+		u32 length = (u32) ecmaToInt32(length_d);
+		int32_t signed_len = (int32_t) length;
+		u32 alloc_size = 0;
+		if (signed_len > 0)
+			alloc_size = (u32)signed_len < 1000000 ? (u32)signed_len : 1000000;
+		ASArray* arr = allocArray(app_context, alloc_size > 0 ? alloc_size : 4);
+		arr->length = length;
+		pushCreatedArray(app_context, arr);
+	}
+	else
+	{
+		// Array(elem1, elem2, ...) — array with elements
+		ASArray* arr = allocArray(app_context, num_args);
+		arr->length = num_args;
+		for (u32 i = 0; i < num_args; i++)
+		{
+			setArrayElement(app_context, arr, i, &args[i]);
+		}
+		pushCreatedArray(app_context, arr);
+	}
+}
+
+static inline int isConstructorName(const char* name, u32 len)
+{
+	return len == 11 && memcmp(name, "constructor", 11) == 0;
+}
+
 void actionInitArray(SWFAppContext* app_context)
 {
 	// 1. Pop array element count
@@ -51584,6 +52302,7 @@ void actionInitArray(SWFAppContext* app_context)
 			pv.data.numeric_value = (u64)ver_arr_proto;
 			setPropertyWithFlags(app_context, arr->props, "__proto__", 9, &pv, PROPERTY_FLAGS_DONTENUM);
 		}
+		arrayResolveGlobalCtor(app_context, arr, ver_arr_proto, PROPERTY_FLAGS_DONTENUM);
 	}
 
 	// 4. Push array reference to stack
@@ -52404,99 +53123,6 @@ void actionSetMember(SWFAppContext* app_context)
 					return;
 				}
 			}
-			// Rectangle computed property setters
-			if (g_rect_prototype != NULL) {
-				ActionVar* __rp = getProperty(obj, "__proto__", 9);
-				if (__rp && __rp->type == ACTION_STACK_VALUE_OBJECT &&
-				    (ASObject*)__rp->data.numeric_value == g_rect_prototype) {
-					int rect_handled = 0;
-					if (prop_name_len == 4 && memcmp(prop_name, "left", 4) == 0) {
-						// left setter: width = (x + width) - new_left; x = new_left
-						double old_right = varToDoubleSimple(getProperty(obj, "x", 1)) +
-						                   varToDoubleSimple(getProperty(obj, "width", 5));
-						double new_left = varToDoubleSimple(&value_var);
-						ActionVar nw = makeF64(old_right - new_left);
-						setProperty(app_context, obj, "width", 5, &nw);
-						setProperty(app_context, obj, "x", 1, &value_var);
-						rect_handled = 1;
-					} else if (prop_name_len == 3 && memcmp(prop_name, "top", 3) == 0) {
-						double old_bottom = varToDoubleSimple(getProperty(obj, "y", 1)) +
-						                    varToDoubleSimple(getProperty(obj, "height", 6));
-						double new_top = varToDoubleSimple(&value_var);
-						ActionVar nh = makeF64(old_bottom - new_top);
-						setProperty(app_context, obj, "height", 6, &nh);
-						setProperty(app_context, obj, "y", 1, &value_var);
-						rect_handled = 1;
-					} else if (prop_name_len == 5 && memcmp(prop_name, "right", 5) == 0) {
-						double x = varToDoubleSimple(getProperty(obj, "x", 1));
-						double new_right = varToDoubleSimple(&value_var);
-						ActionVar nw = makeF64(new_right - x);
-						setProperty(app_context, obj, "width", 5, &nw);
-						rect_handled = 1;
-					} else if (prop_name_len == 6 && memcmp(prop_name, "bottom", 6) == 0) {
-						double y = varToDoubleSimple(getProperty(obj, "y", 1));
-						double new_bottom = varToDoubleSimple(&value_var);
-						ActionVar nh = makeF64(new_bottom - y);
-						setProperty(app_context, obj, "height", 6, &nh);
-						rect_handled = 1;
-					} else if (prop_name_len == 7 && memcmp(prop_name, "topLeft", 7) == 0) {
-						// topLeft setter: read pt.x, pt.y from value, then set left and top
-						ActionVar* ptx = NULL; ActionVar* pty = NULL;
-						if (value_var.type == ACTION_STACK_VALUE_OBJECT && value_var.data.numeric_value != 0) {
-							ASObject* pt = (ASObject*)value_var.data.numeric_value;
-							ptx = getProperty(pt, "x", 1);
-							pty = getProperty(pt, "y", 1);
-						}
-						// Set left (adjusts width)
-						double old_right = varToDoubleSimple(getProperty(obj, "x", 1)) +
-						                   varToDoubleSimple(getProperty(obj, "width", 5));
-						double new_left = ptx ? varToDoubleSimple(ptx) : NAN;
-						ActionVar nw = makeF64(old_right - new_left);
-						setProperty(app_context, obj, "width", 5, &nw);
-						if (ptx) setProperty(app_context, obj, "x", 1, ptx);
-						else { ActionVar uv = {0}; uv.type = ACTION_STACK_VALUE_UNDEFINED; setProperty(app_context, obj, "x", 1, &uv); }
-						// Set top (adjusts height)
-						double old_bottom = varToDoubleSimple(getProperty(obj, "y", 1)) +
-						                    varToDoubleSimple(getProperty(obj, "height", 6));
-						double new_top = pty ? varToDoubleSimple(pty) : NAN;
-						ActionVar nh = makeF64(old_bottom - new_top);
-						setProperty(app_context, obj, "height", 6, &nh);
-						if (pty) setProperty(app_context, obj, "y", 1, pty);
-						else { ActionVar uv = {0}; uv.type = ACTION_STACK_VALUE_UNDEFINED; setProperty(app_context, obj, "y", 1, &uv); }
-						rect_handled = 1;
-					} else if (prop_name_len == 11 && memcmp(prop_name, "bottomRight", 11) == 0) {
-						ActionVar* ptx = NULL; ActionVar* pty = NULL;
-						if (value_var.type == ACTION_STACK_VALUE_OBJECT && value_var.data.numeric_value != 0) {
-							ASObject* pt = (ASObject*)value_var.data.numeric_value;
-							ptx = getProperty(pt, "x", 1);
-							pty = getProperty(pt, "y", 1);
-						}
-						// right = pt.x → width = pt.x - x
-						double x = varToDoubleSimple(getProperty(obj, "x", 1));
-						ActionVar nw = makeF64((ptx ? varToDoubleSimple(ptx) : NAN) - x);
-						setProperty(app_context, obj, "width", 5, &nw);
-						// bottom = pt.y → height = pt.y - y
-						double y = varToDoubleSimple(getProperty(obj, "y", 1));
-						ActionVar nh = makeF64((pty ? varToDoubleSimple(pty) : NAN) - y);
-						setProperty(app_context, obj, "height", 6, &nh);
-						rect_handled = 1;
-					} else if (prop_name_len == 4 && memcmp(prop_name, "size", 4) == 0) {
-						ActionVar* ptx = NULL; ActionVar* pty = NULL;
-						if (value_var.type == ACTION_STACK_VALUE_OBJECT && value_var.data.numeric_value != 0) {
-							ASObject* pt = (ASObject*)value_var.data.numeric_value;
-							ptx = getProperty(pt, "x", 1);
-							pty = getProperty(pt, "y", 1);
-						}
-						// width = pt.x, height = pt.y
-						if (ptx) setProperty(app_context, obj, "width", 5, ptx);
-						else { ActionVar uv = {0}; uv.type = ACTION_STACK_VALUE_UNDEFINED; setProperty(app_context, obj, "width", 5, &uv); }
-						if (pty) setProperty(app_context, obj, "height", 6, pty);
-						else { ActionVar uv = {0}; uv.type = ACTION_STACK_VALUE_UNDEFINED; setProperty(app_context, obj, "height", 6, &uv); }
-						rect_handled = 1;
-					}
-					if (rect_handled) return;
-				}
-			}
 			// Check watcher table before setting the property
 			// IMPORTANT: prop_name points to a static buffer (_sm_buf) that recursive
 			// actionSetMember calls (from inside the watcher callback) will clobber.
@@ -52741,6 +53367,8 @@ void actionSetMember(SWFAppContext* app_context)
 		ASArray* arr = (ASArray*) obj_var.data.numeric_value;
 		if (arr != NULL)
 		{
+			if (arr->virt_ctor != NULL && isConstructorName(prop_name, prop_name_len))
+				arrayMaterializeVirtCtor(app_context, arr);
 			// Check for addProperty setter in arr->props first (overrides built-in behavior)
 			if (arr->props != NULL)
 			{
@@ -53932,8 +54560,12 @@ void actionSetMember(SWFAppContext* app_context)
 				}
 			}
 			// TextField htmlText: parse HTML into format runs, extract plain text
+			// (SWF<=5: only on a real text field. A SWF5 text-field ref is its
+			// parent clip — swf5TextFieldRefToClip — where htmlText is a plain
+			// property.)
 			if (strcmp(prop_name, "htmlText") == 0 && mc->dynamic_props != NULL
-				&& value_var.type == ACTION_STACK_VALUE_STRING)
+				&& value_var.type == ACTION_STACK_VALUE_STRING
+				&& (g_swf_version > 5 || MC_IS_TEXTFIELD(mc)))
 			{
 				ASObject* props = (ASObject*) mc->dynamic_props;
 				// Check if html property is true
@@ -53969,6 +54601,7 @@ void actionSetMember(SWFAppContext* app_context)
 					table->from_html_text = 1; // Content set via .htmlText
 					TFRun defaults;
 					tf_get_defaults(mc, &defaults);
+					tf_apply_new_format_font(mc, &defaults);
 					// Override defaults from textColor
 					ActionVar* tc_prop = getProperty(props, "textColor", 9);
 					if (tc_prop != NULL && tc_prop->type == ACTION_STACK_VALUE_F64) {
@@ -54003,7 +54636,7 @@ void actionSetMember(SWFAppContext* app_context)
 						}
 						// Sync font name -> font_id
 						if (first_run->font_name[0] != '\0') {
-							u16 found_fid = ng_findFontIdByName(first_run->font_name);
+							u16 found_fid = ng_resolveTextFormatFontId(first_run->font_name, first_run->bold, first_run->italic);
 							ActionVar fid_val = {0};
 							fid_val.type = ACTION_STACK_VALUE_F64;
 							VAL(double, &fid_val.data.numeric_value) = (double)found_fid;
@@ -55094,6 +55727,11 @@ void actionDelete(SWFAppContext* app_context)
 					return;
 				}
 			}
+			// Virtual own `constructor` is DONT_DELETE (arrayResolveGlobalCtor)
+			if (arr->virt_ctor != NULL && isConstructorName(prop_name, prop_name_len)) {
+				PUSH(ACTION_STACK_VALUE_BOOLEAN, 0ULL);
+				return;
+			}
 			// Non-numeric property — try deleting from arr->props
 			if (arr->props != NULL) {
 				bool success = deleteProperty(app_context, arr->props, prop_name, prop_name_len);
@@ -55277,6 +55915,10 @@ static __attribute__((noinline)) int computeTextFieldDimension(
 	if (font_id == 0 && mc->ng_textfield_idx >= 0) {
 		font_id = ng_getTextFieldFontId(mc->ng_textfield_idx);
 	}
+	if (tf_embedded_font_missing(mc, font_id)) {
+		*out_result = 0.0;
+		return 1;
+	}
 	// Check for leading override from setTextFormat/setNewTextFormat
 	ActionVar* leading_prop = getProperty((ASObject*)mc->dynamic_props, "_tf_leading", 11);
 	if (leading_prop != NULL && leading_prop->type == ACTION_STACK_VALUE_F64) {
@@ -55429,6 +56071,26 @@ static int getLetterSpacingTwips(MovieClip* mc)
 			return (int)(ls * 20.0); // pixels to twips
 	}
 	return 0;
+}
+
+// 1 when TextFormat `fmt` carries `name` (bold / italic) as boolean true.
+static int tf_fmt_flag_set(ASObject* fmt, const char* name, u32 name_len)
+{
+	ActionVar* v = fmt ? getProperty(fmt, name, name_len) : NULL;
+	return (v != NULL && v->type == ACTION_STACK_VALUE_BOOLEAN && v->data.numeric_value != 0);
+}
+
+// Flash: an embedFonts field whose font resolves to no embedded DefineFont2/3
+// (TextFormat.font names nothing the SWF embeds, or the createTextField
+// default) measures and draws nothing; it does NOT fall back to a device
+// font (fonts/embed_name_lookup: 63 rows of textWidth 0). font_id is the
+// field's resolved font after the static-field fallback.
+static int tf_embedded_font_missing(MovieClip* mc, u16 font_id)
+{
+	if (mc == NULL || mc->dynamic_props == NULL) return 0;
+	ActionVar* ef = getProperty((ASObject*)mc->dynamic_props, "embedFonts", 10);
+	if (!(ef && ef->type == ACTION_STACK_VALUE_BOOLEAN && ef->data.numeric_value)) return 0;
+	return !ng_isSwfEmbeddedFont(font_id);
 }
 
 // Set device font mode based on text field's embedFonts property.
@@ -55612,6 +56274,8 @@ static void applyAutoSize(SWFAppContext* app_context, MovieClip* mc, int skip_if
 			// font_id=0 means no DefineFont tag, just built-in fallback
 			if (_as_fid == 0 && mc->ng_textfield_idx == -2)
 				_as_embed_no_font = 1;
+			if (tf_embedded_font_missing(mc, _as_fid))
+				_as_embed_no_font = 1;
 		}
 	}
 
@@ -55774,7 +56438,15 @@ static int recomputeMaxScroll(SWFAppContext* app_context, MovieClip* mc)
 	return ms < 1.0 ? 1 : (int)ms;
 }
 
+static void actionGetMemberImpl(SWFAppContext* app_context);
+
 void actionGetMember(SWFAppContext* app_context)
+{
+	actionGetMemberImpl(app_context);
+	swf5TextFieldRefToClip(app_context);
+}
+
+static void actionGetMemberImpl(SWFAppContext* app_context)
 {
 	// Some recompiled functions preload `_global` directly from the `global_object`
 	// C symbol at function entry, bypassing GetVariable("_global") which would
@@ -56125,70 +56797,9 @@ void actionGetMember(SWFAppContext* app_context)
 					}
 				}
 				if (!bmp_handled) {
-				// Geometry computed properties
+				// (Point.length and the Rectangle edge/corner/size properties are
+				// addProperty accessors on their prototypes; see initGeomPrototypes.)
 				int geom_handled = 0;
-				if (g_point_prototype != NULL || g_rect_prototype != NULL) {
-					ActionVar* __proto_v = getProperty(obj, "__proto__", 9);
-					if (__proto_v && __proto_v->type == ACTION_STACK_VALUE_OBJECT) {
-						ASObject* proto = (ASObject*) __proto_v->data.numeric_value;
-						if (proto == g_point_prototype && prop_name_len == 6 && memcmp(prop_name, "length", 6) == 0) {
-							// Point.length getter
-							double x = varToDoubleSimple(getProperty(obj, "x", 1));
-							double y = varToDoubleSimple(getProperty(obj, "y", 1));
-							double len = sqrt(x * x + y * y);
-							ActionVar lv = makeF64(len);
-							pushVar(app_context, &lv);
-							geom_handled = 1;
-						} else if (proto == g_rect_prototype) {
-							// Rectangle computed getters
-							double rx = varToDoubleSimple(getProperty(obj, "x", 1));
-							double ry = varToDoubleSimple(getProperty(obj, "y", 1));
-							double rw = varToDoubleSimple(getProperty(obj, "width", 5));
-							double rh = varToDoubleSimple(getProperty(obj, "height", 6));
-							if (prop_name_len == 4 && memcmp(prop_name, "left", 4) == 0) {
-								ActionVar* xv = getProperty(obj, "x", 1);
-								if (xv) pushVar(app_context, xv); else pushUndefined(app_context);
-								geom_handled = 1;
-							} else if (prop_name_len == 3 && memcmp(prop_name, "top", 3) == 0) {
-								ActionVar* yv = getProperty(obj, "y", 1);
-								if (yv) pushVar(app_context, yv); else pushUndefined(app_context);
-								geom_handled = 1;
-							} else if (prop_name_len == 5 && memcmp(prop_name, "right", 5) == 0) {
-								ActionVar v = makeF64(rx + rw);
-								pushVar(app_context, &v);
-								geom_handled = 1;
-							} else if (prop_name_len == 6 && memcmp(prop_name, "bottom", 6) == 0) {
-								ActionVar v = makeF64(ry + rh);
-								pushVar(app_context, &v);
-								geom_handled = 1;
-							} else if (prop_name_len == 7 && memcmp(prop_name, "topLeft", 7) == 0) {
-								ActionVar* xxv = getProperty(obj, "x", 1);
-								ActionVar* yyv = getProperty(obj, "y", 1);
-								ASObject* pt = createPointObj(app_context, xxv, yyv);
-								ActionVar pv = {0}; pv.type = ACTION_STACK_VALUE_OBJECT;
-								pv.data.numeric_value = (u64)pt;
-								pushVar(app_context, &pv);
-								geom_handled = 1;
-							} else if (prop_name_len == 11 && memcmp(prop_name, "bottomRight", 11) == 0) {
-								ActionVar brx = makeF64(rx + rw);
-								ActionVar bry = makeF64(ry + rh);
-								ASObject* pt = createPointObj(app_context, &brx, &bry);
-								ActionVar pv = {0}; pv.type = ACTION_STACK_VALUE_OBJECT;
-								pv.data.numeric_value = (u64)pt;
-								pushVar(app_context, &pv);
-								geom_handled = 1;
-							} else if (prop_name_len == 4 && memcmp(prop_name, "size", 4) == 0) {
-								ActionVar* wv = getProperty(obj, "width", 5);
-								ActionVar* hv = getProperty(obj, "height", 6);
-								ASObject* pt = createPointObj(app_context, wv, hv);
-								ActionVar pv = {0}; pv.type = ACTION_STACK_VALUE_OBJECT;
-								pv.data.numeric_value = (u64)pt;
-								pushVar(app_context, &pv);
-								geom_handled = 1;
-							}
-						}
-					}
-				}
 				if (!geom_handled) {
 					// Check if __proto__ is ARRAY and key is numeric — look in proto array's elements
 					int arr_proto_handled = 0;
@@ -56351,9 +56962,14 @@ void actionGetMember(SWFAppContext* app_context)
 				// (Phase 6 of XML_XMLNODE_PLAN — XMLNode tests check
 				// `node.childNodes.push` truthiness).
 				ActionVar* pv = NULL;
+				if (arr->virt_ctor != NULL && isConstructorName(prop_name, prop_name_len))
+				{
+					PUSH(ACTION_STACK_VALUE_FUNCTION, (u64) arr->virt_ctor);
+					return;
+				}
 				if (arr->props != NULL)
 					pv = getPropertyWithPrototype(arr->props, prop_name, prop_name_len);
-				if (pv == NULL)
+				if (pv == NULL && !arr->no_proto_fallback)
 				{
 					initArrayPrototypeMethods(app_context);
 					if (g_array_prototype != NULL)
@@ -57047,7 +57663,9 @@ void actionGetMember(SWFAppContext* app_context)
 								_ht_def.font_height = (s16)fh;
 							}
 							ActionVar* _ht_fid = getProperty(_ht_dprops, "_tf_fontId", 10);
-							if (_ht_fid != NULL && _ht_fid->type == ACTION_STACK_VALUE_F64) {
+							if (tf_apply_new_format_font(mc, &_ht_def)) {
+								// setNewTextFormat face (device fonts included) wins
+							} else if (_ht_fid != NULL && _ht_fid->type == ACTION_STACK_VALUE_F64) {
 								double fid_d; memcpy(&fid_d, &_ht_fid->data.numeric_value, sizeof(double));
 								u16 fid = (u16)fid_d;
 								const char* fn = ng_getFontName(fid);
@@ -59463,87 +60081,8 @@ void actionNewObject(SWFAppContext* app_context)
 				setProperty(app_context, (ASObject*)new_obj, "_listeners", 10, &arr_var);
 			}
 
-			// ContextMenu constructor: create builtInItems and customItems
-			// Property insertion order is reversed (LIFO enumeration)
-			if (ctor_func == &g_stub_ctors[4]) {
-				ASObject* cm_obj = (ASObject*)new_obj;
-				// builtInItems: object with 8 boolean properties (all true)
-				// Expected enum order: save,zoom,quality,play,loop,rewind,forward_back,print
-				// LIFO: insert in reverse
-				ASObject* builtin = allocObject(app_context, 10);
-				retainObject(builtin);
-				setObjectProto(app_context, builtin);
-				ActionVar bt = {0};
-				bt.type = ACTION_STACK_VALUE_BOOLEAN;
-				bt.data.numeric_value = 1;
-				setProperty(app_context, builtin, "print", 5, &bt);
-				setProperty(app_context, builtin, "forward_back", 12, &bt);
-				setProperty(app_context, builtin, "rewind", 6, &bt);
-				setProperty(app_context, builtin, "loop", 4, &bt);
-				setProperty(app_context, builtin, "play", 4, &bt);
-				setProperty(app_context, builtin, "quality", 7, &bt);
-				setProperty(app_context, builtin, "zoom", 4, &bt);
-				setProperty(app_context, builtin, "save", 4, &bt);
-				ActionVar bv = {0};
-				bv.type = ACTION_STACK_VALUE_OBJECT;
-				bv.data.numeric_value = (u64)builtin;
-				// Expected enum order: customItems,builtInItems,onSelect
-				// LIFO: insert onSelect, builtInItems, customItems
-				// onSelect: first constructor arg (any type) or undefined.
-				// gnash test ContextMenu.as:294-306 expects
-				// `new ContextMenu(callback).onSelect == callback`.
-				ActionVar os_var = {0};
-				if (num_args > 0) {
-					os_var = args[0];
-				} else {
-					os_var.type = ACTION_STACK_VALUE_UNDEFINED;
-				}
-				setProperty(app_context, cm_obj, "onSelect", 8, &os_var);
-				setProperty(app_context, cm_obj, "builtInItems", 12, &bv);
-				// customItems: empty array
-				ASArray* custom = allocArray(app_context, 4);
-				custom->length = 0;
-				ActionVar cv = {0};
-				cv.type = ACTION_STACK_VALUE_ARRAY;
-				cv.data.numeric_value = (u64)custom;
-				setProperty(app_context, cm_obj, "customItems", 11, &cv);
-			}
-
-			// ContextMenuItem constructor: set caption, onSelect, etc.
-			if (ctor_func == &g_stub_ctors[5]) {
-				ASObject* cmi_obj = (ASObject*)new_obj;
-				// caption from first arg (or undefined)
-				if (num_args > 0 && args[0].type == ACTION_STACK_VALUE_STRING) {
-					setProperty(app_context, cmi_obj, "caption", 7, &args[0]);
-				} else {
-					ActionVar uv = {0};
-					uv.type = ACTION_STACK_VALUE_UNDEFINED;
-					setProperty(app_context, cmi_obj, "caption", 7, &uv);
-				}
-				// onSelect callback from second arg (or undefined)
-				if (num_args > 1) {
-					setProperty(app_context, cmi_obj, "onSelect", 8, &args[1]);
-				} else {
-					ActionVar uv = {0};
-					uv.type = ACTION_STACK_VALUE_UNDEFINED;
-					setProperty(app_context, cmi_obj, "onSelect", 8, &uv);
-				}
-				// separatorBefore from third arg (default false)
-				ActionVar sb = {0};
-				sb.type = ACTION_STACK_VALUE_BOOLEAN;
-				sb.data.numeric_value = (num_args > 2 && args[2].data.numeric_value) ? 1 : 0;
-				setProperty(app_context, cmi_obj, "separatorBefore", 15, &sb);
-				// enabled (default true)
-				ActionVar en = {0};
-				en.type = ACTION_STACK_VALUE_BOOLEAN;
-				en.data.numeric_value = 1;
-				setProperty(app_context, cmi_obj, "enabled", 7, &en);
-				// visible (default true)
-				ActionVar vi = {0};
-				vi.type = ACTION_STACK_VALUE_BOOLEAN;
-				vi.data.numeric_value = 1;
-				setProperty(app_context, cmi_obj, "visible", 7, &vi);
-			}
+			// (ContextMenu / ContextMenuItem: their bodies run as the constructors'
+			// advanced_func above — builtin_contextmenu_ctor / _item_ctor.)
 
 			// NetStream constructor: install native data properties on prototype
 			// when constructed with a connected NetConnection argument.
@@ -59793,6 +60332,17 @@ void actionNewMethod(SWFAppContext* app_context)
 						registers = (ActionVar*) HCALLOC(func->register_count, sizeof(ActionVar));
 					}
 
+					// Captured scopes first (s22 M5): a closure used as a constructor
+					// (`new obj.Ctor()`) runs in its defining scope, as under NewObject.
+					u32 _nm_saved_scope_depth = scope_depth;
+					for (u8 _nm_ci = 0; _nm_ci < func->captured_scope_count; _nm_ci++) {
+						if (scope_depth < MAX_SCOPE_DEPTH) {
+							scope_is_with[scope_depth] = func->captured_scope_is_with[_nm_ci];
+							scope_mc[scope_depth] = func->captured_scope_mc[_nm_ci];
+							scope_chain[scope_depth++] = func->captured_scope[_nm_ci];
+						}
+					}
+
 					// Create local scope for function
 					ASObject* local_scope = allocObject(app_context, 8);
 					if (scope_depth < MAX_SCOPE_DEPTH) {
@@ -59825,10 +60375,8 @@ void actionNewMethod(SWFAppContext* app_context)
 
 					g_current_executing_func = prev_executing_func_nm;
 
-					// Pop local scope
-					if (scope_depth > 0) {
-						scope_depth--;
-					}
+					// Pop local scope + captured scopes
+					scope_depth = _nm_saved_scope_depth;
 					releaseObject(app_context, local_scope);
 
 					if (registers != NULL) FREE(registers);
@@ -60404,6 +60952,17 @@ void actionNewMethod(SWFAppContext* app_context)
 				registers = (ActionVar*) HCALLOC(user_ctor_func->register_count, sizeof(ActionVar));
 			}
 
+			// Captured scopes first (s22 M5): a closure used as a constructor
+			// (`new obj.Ctor()`) runs in its defining scope, as under NewObject.
+			u32 _nm_saved_scope_depth = scope_depth;
+			for (u8 _nm_ci = 0; _nm_ci < user_ctor_func->captured_scope_count; _nm_ci++) {
+				if (scope_depth < MAX_SCOPE_DEPTH) {
+					scope_is_with[scope_depth] = user_ctor_func->captured_scope_is_with[_nm_ci];
+					scope_mc[scope_depth] = user_ctor_func->captured_scope_mc[_nm_ci];
+					scope_chain[scope_depth++] = user_ctor_func->captured_scope[_nm_ci];
+				}
+			}
+
 			// Create local scope for function
 			ASObject* local_scope = allocObject(app_context, 8);
 			if (scope_depth < MAX_SCOPE_DEPTH) {
@@ -60417,10 +60976,8 @@ void actionNewMethod(SWFAppContext* app_context)
 			return_value = user_ctor_func->advanced_func(app_context, args, num_args, registers, new_obj_inst);
 			popCtorContext();
 
-			// Pop local scope
-			if (scope_depth > 0) {
-				scope_depth--;
-			}
+			// Pop local scope + captured scopes
+			scope_depth = _nm_saved_scope_depth;
 			releaseObject(app_context, local_scope);
 
 			if (registers != NULL) FREE(registers);
@@ -63738,44 +64295,8 @@ void actionCallFunction(SWFAppContext* app_context, char* str_buffer)
 	// Array() — called as function, same behavior as new Array()
 	else if (func_name_len == 5 && strncmp(func_name, "Array", 5) == 0)
 	{
-		if (num_args == 0)
-		{
-			// Array() — empty array
-			ASArray* arr = allocArray(app_context, 4);
-			arr->length = 0;
-			if (args != NULL) FREE(args);
-			PUSH(ACTION_STACK_VALUE_ARRAY, (u64) arr);
-		}
-		else if (num_args == 1 &&
-		         (args[0].type == ACTION_STACK_VALUE_F32 ||
-		          args[0].type == ACTION_STACK_VALUE_F64))
-		{
-			// Array(length)
-			double length_d = (args[0].type == ACTION_STACK_VALUE_F32) ?
-				(double) VAL(float, &args[0].data.numeric_value) :
-				VAL(double, &args[0].data.numeric_value);
-			u32 length = (u32) ecmaToInt32(length_d);
-			int32_t signed_len = (int32_t) length;
-			u32 alloc_size = 0;
-			if (signed_len > 0)
-				alloc_size = (u32)signed_len < 1000000 ? (u32)signed_len : 1000000;
-			ASArray* arr = allocArray(app_context, alloc_size > 0 ? alloc_size : 4);
-			arr->length = length;
-			if (args != NULL) FREE(args);
-			PUSH(ACTION_STACK_VALUE_ARRAY, (u64) arr);
-		}
-		else
-		{
-			// Array(elem1, elem2, ...) — array with elements
-			ASArray* arr = allocArray(app_context, num_args);
-			arr->length = num_args;
-			for (u32 i = 0; i < num_args; i++)
-			{
-				setArrayElement(app_context, arr, i, &args[i]);
-			}
-			if (args != NULL) FREE(args);
-			PUSH(ACTION_STACK_VALUE_ARRAY, (u64) arr);
-		}
+		pushArrayCalledAsFunction(app_context, args, num_args);
+		if (args != NULL) FREE(args);
 		builtin_handled = 1;
 	}
 
@@ -65065,7 +65586,13 @@ void actionCallFunction(SWFAppContext* app_context, char* str_buffer)
 				{
 					// Check if this is a built-in converter function (called without new)
 					const char* fname = func->name;
-					if (strcmp(fname, "Number") == 0)
+					if (strcmp(fname, "Array") == 0)
+					{
+						// Array() through an alias (`var f = Array; f(1, 2)`)
+						pushArrayCalledAsFunction(app_context, args, num_args);
+						if (args != NULL) FREE(args);
+					}
+					else if (strcmp(fname, "Number") == 0)
 					{
 						// Number() → primitive number: 0 if no args, else toNumber(arg)
 						double _nc_result = 0.0;
@@ -66006,6 +66533,8 @@ static int callArrayMethod(SWFAppContext* app_context,
 						found = 1;
 				}
 				if (!found && arr->props != NULL && hasPropertyRaw(arr->props, nb, nlen))
+					found = 1;
+				if (!found && arr->virt_ctor != NULL && isConstructorName(nb, nlen))
 					found = 1;
 			}
 		}
@@ -68319,7 +68848,7 @@ static int callStringPrimitiveMethod(SWFAppContext* app_context, char* str_buffe
 				elem.str_size = str_len;
 				elem.data.numeric_value = (u64)str_value;
 				setArrayElement(app_context, arr, 0, &elem);
-				PUSH(ACTION_STACK_VALUE_ARRAY, (u64)arr);
+				pushCreatedArray(app_context, arr);
 				return 1;
 			}
 		}
@@ -68366,7 +68895,7 @@ static int callStringPrimitiveMethod(SWFAppContext* app_context, char* str_buffe
 
 		if (limit == 0)
 		{
-			PUSH(ACTION_STACK_VALUE_ARRAY, (u64)allocArray(app_context, 1));
+			pushCreatedArray(app_context, allocArray(app_context, 1));
 			return 1;
 		}
 
@@ -68453,7 +68982,7 @@ static int callStringPrimitiveMethod(SWFAppContext* app_context, char* str_buffe
 			}
 		}
 
-		PUSH(ACTION_STACK_VALUE_ARRAY, (u64)arr);
+		pushCreatedArray(app_context, arr);
 		return 1;
 	}
 
@@ -68539,8 +69068,10 @@ static int primNumBoolCallProtoMethod(SWFAppContext* app_context, ActionVar* obj
 	ActionVar this_v = {0};
 	this_v.type = ACTION_STACK_VALUE_OBJECT;
 	this_v.data.numeric_value = (u64) wrap;
+	// INV_CAPTURED_SCOPE: a closure method runs in its defining scope (s22 M5,
+	// same as the object-method arm).
 	InvokeOpts opts = {
-		.flags = (INV_SUPER_CTX | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
+		.flags = (INV_SUPER_CTX | INV_CAPTURED_SCOPE | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
 		.super_depth = 1,
 		.act_flags = (u8)(INV_ACT_THIS | INV_ACT_ARGUMENTS | INV_ACT_SUPER),
 	};
@@ -69597,9 +70128,11 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 				int _om_caller_ver = g_swf_version;
 
 				// Unlike actionCallFunction, a method call does NOT reset the scope
-				// chain and does NOT restore the callee's captured scopes — it stacks a
-				// bare local frame on top of the caller's chain. Load-bearing asymmetry
-				// (plan §3): reproduced, not normalized. CF_CTX_LIVE also refuses to
+				// chain: it stacks the callee's captured scopes (INV_CAPTURED_SCOPE,
+				// s22 M5 — a closure called as `obj.m()` sees its defining scope, as in
+				// Flash/Ruffle Activation::from_function) and a local frame on top of
+				// the caller's chain. Hiding the caller's chain (CF_RESET_SCOPE) is a
+				// separately-measured follow-up. CF_CTX_LIVE also refuses to
 				// enter a DESTROYED base clip and leaves g_current_sprite_obj alone,
 				// where actionCallFunction's CF_CTX does neither.
 				ClosureFrame cf;
@@ -69622,7 +70155,7 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 				// type-1 loop this replaces pushed num_args of them, neither clamping
 				// nor padding — see regression/method_type1_args.
 				InvokeOpts opts = {
-					.flags = (INV_SUPER_CTX | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
+					.flags = (INV_SUPER_CTX | INV_CAPTURED_SCOPE | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
 					.super_depth = (u16)method_search_depth,
 					.act_flags = (u8)(INV_ACT_THIS | INV_ACT_ARGUMENTS | INV_ACT_SUPER),
 					// advanced_func receives the raw receiver, NULL included; this_var
@@ -69835,10 +70368,40 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 			return;
 		}
 
+		// An OWN function property (`arr.push = function () {...}`) shadows the
+		// built-in of the same name, as for any object: Flash finds it first.
+		ActionVar* own_override = NULL;
+		if (arr->props != NULL) {
+			ASProperty* op = findPropertyRaw(arr->props, method_name, method_name_len);
+			if (op != NULL && op->getter == NULL && op->value.type == ACTION_STACK_VALUE_FUNCTION
+			    && !isPropertyHiddenAtVersion(op->flash_flags))
+				own_override = &op->value;
+		}
+		// So does a user-defined (script) function on the prototype chain
+		// (`Array.prototype.push = function () {...}`): the native fast path
+		// below would otherwise bypass it. Natives carry swf_version 0.
+		if (own_override == NULL) {
+			ASObject* aproto = NULL;
+			ASProperty* pp = (arr->props != NULL) ? findPropertyRaw(arr->props, "__proto__", 9) : NULL;
+			if (pp != NULL) {
+				if (pp->value.type == ACTION_STACK_VALUE_OBJECT)
+					aproto = (ASObject*)(uintptr_t) pp->value.data.numeric_value;
+			} else {
+				aproto = getVersionedArrayProto(app_context);
+			}
+			ActionVar* pm = (aproto != NULL) ? getPropertyWithPrototype(aproto, method_name, method_name_len) : NULL;
+			if (pm != NULL && pm->type == ACTION_STACK_VALUE_FUNCTION) {
+				ASFunction* pf = (ASFunction*)(uintptr_t) pm->data.numeric_value;
+				if (pf != NULL && pf->swf_version != 0)
+					own_override = pm;
+			}
+		}
+
 		// Try built-in array methods FIRST (push, pop, sort, etc.)
-		int handled = callArrayMethod(app_context, arr,
-		                               method_name, method_name_len,
-		                               args, num_args);
+		int handled = (own_override != NULL) ? 0 :
+		              callArrayMethod(app_context, arr,
+		                              method_name, method_name_len,
+		                              args, num_args);
 
 		if (handled)
 		{
@@ -69847,8 +70410,8 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 		}
 
 		// Not a built-in method — check arr->props (and prototype chain) for user-defined methods
-		ActionVar* user_method_prop = NULL;
-		if (arr->props != NULL) {
+		ActionVar* user_method_prop = own_override;
+		if (user_method_prop == NULL && arr->props != NULL) {
 			user_method_prop = getPropertyWithPrototype(arr->props, method_name, method_name_len);
 		}
 		if (user_method_prop != NULL && user_method_prop->type == ACTION_STACK_VALUE_FUNCTION) {
@@ -69878,15 +70441,29 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 				// The core pushes EXACTLY param_count operands. The type-1 loop this
 				// replaces pushed num_args of them, neither clamping a long call nor
 				// padding a short one — see regression/array_method_type1_args.
+				// INV_CAPTURED_SCOPE (type-2): a closure method runs in its defining
+				// scope (s22 M5, same as the object-method arm).
+				// INV_OVERRIDE_THIS (type-2 script callee): a preloaded `this` register
+				// must keep the ARRAY tag (the prologue would otherwise wrap the raw
+				// ASArray* as an OBJECT). Not for a native callee, which has no
+				// prologue to consume it (it would leak into a nested callback); a
+				// native reads the receiver kind off g_call_this_type instead.
+				int _am_script = (func->swf_version != 0);  // built-ins carry no version
 				InvokeOpts opts = {
 					.flags = (u32)(INV_THIS_STACK |
-					               (_am_t2 ? (INV_LOCAL_SCOPE | INV_BIND_THIS) : 0)),
+					               (_am_t2 ? (INV_CAPTURED_SCOPE | INV_LOCAL_SCOPE | INV_BIND_THIS) : 0) |
+					               ((_am_t2 && _am_script) ? INV_OVERRIDE_THIS : 0)),
+					.override_this = &this_var,
 				};
 
+				u8 _am_saved_call_this_type = g_call_this_type;
+				if (_am_t2 && !_am_script)
+					g_call_this_type = ACTION_STACK_VALUE_ARRAY;
 				g_call_depth++;
 				ActionVar result = invokeFunctionValue(app_context, func, &this_var,
 				                                       args, num_args, &opts);
 				g_call_depth--;
+				g_call_this_type = _am_saved_call_this_type;
 
 				popSuperContext();
 				if (args != NULL) FREE(args);
@@ -70059,8 +70636,11 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 						// INV_SUPER_CTX is safe here where .call/.apply and the array arms had to
 						// keep the super push outside: the receiver the core derives from
 						// this_var IS the one this arm pushes, since this_var = OBJECT(_sp_wrap).
+						//
+						// INV_CAPTURED_SCOPE: a closure method runs in its defining scope
+						// (s22 M5, same as the object-method arm).
 						InvokeOpts opts = {
-							.flags = (INV_SUPER_CTX | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
+							.flags = (INV_SUPER_CTX | INV_CAPTURED_SCOPE | INV_LOCAL_SCOPE | INV_EXEC_FUNC),
 							.super_depth = 1,
 							.act_flags = (u8)(INV_ACT_THIS | INV_ACT_ARGUMENTS |
 							                  INV_ACT_SUPER),
@@ -70460,10 +71040,7 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 					}
 					if (call_args != NULL) FREE(call_args);
 					if (args != NULL) FREE(args);
-					ActionVar _r = {0};
-					_r.type = ACTION_STACK_VALUE_ARRAY;
-					_r.data.numeric_value = (u64) arr;
-					pushVar(app_context, &_r);
+					pushCreatedArray(app_context, arr);
 				}
 				else
 				{
@@ -72498,7 +73075,8 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 						char _font_name[128];
 						size_t _fn_len = u16_to_utf8(varGetU16Ptr(font_prop), font_prop->str_size, _font_name, sizeof(_font_name));
 						_font_name[_fn_len < 127 ? _fn_len : 127] = '\0';
-						u16 found_fid = ng_findFontIdByName(_font_name);
+						u16 found_fid = ng_resolveTextFormatFontId(_font_name,
+							tf_fmt_flag_set(fmt_obj, "bold", 4), tf_fmt_flag_set(fmt_obj, "italic", 6));
 						ActionVar fid_val = {0};
 						fid_val.type = ACTION_STACK_VALUE_F64;
 						VAL(double, &fid_val.data.numeric_value) = (double)found_fid;
@@ -72785,11 +73363,16 @@ void actionCallMethod(SWFAppContext* app_context, char* str_buffer)
 					char _font_name[128];
 					size_t _fn_len = u16_to_utf8(varGetU16Ptr(font_prop), font_prop->str_size, _font_name, sizeof(_font_name));
 					_font_name[_fn_len < 127 ? _fn_len : 127] = '\0';
-					u16 found_fid = ng_findFontIdByName(_font_name);
+					u16 found_fid = ng_resolveTextFormatFontId(_font_name,
+						tf_fmt_flag_set(fmt_obj, "bold", 4), tf_fmt_flag_set(fmt_obj, "italic", 6));
 					ActionVar fid_val = {0};
 					fid_val.type = ACTION_STACK_VALUE_F64;
 					VAL(double, &fid_val.data.numeric_value) = (double)found_fid;
 					if (mc->dynamic_props) setProperty(app_context, (ASObject*)mc->dynamic_props, "_tf_fontId", 10, &fid_val);
+					// Also keep the NAME: a device font ("Times") has no SWF font
+					// id, and the html default face must still be that name.
+					ActionVar fname_val = makeStringActionVar(app_context, _font_name, strlen(_font_name));
+					if (mc->dynamic_props) setProperty(app_context, (ASObject*)mc->dynamic_props, "_tf_fontName", 12, &fname_val);
 				}
 				// Store leading (in twips) from TextFormat
 				ActionVar* ld_prop = getProperty(fmt_obj, "leading", 7);
@@ -78508,13 +79091,26 @@ int actionMouseOverFocusableTextField(SWFAppContext* app_context)
 	return 0;
 }
 
+static void mouse_click_focus_at(SWFAppContext* app_context, float mx, float my,
+                                 int click_focusable_only);
+
 // On mouse click, determine which MC was clicked and set focus if appropriate.
 // Called from swf_core.c before press dispatch on EV_MOUSE_DOWN_LEFT.
 void actionMouseClickFocus(SWFAppContext* app_context)
 {
-	float mx = app_context->mouse.stage_x / 20.0f;
-	float my = app_context->mouse.stage_y / 20.0f;
+	mouse_click_focus_at(app_context, app_context->mouse.stage_x / 20.0f,
+	                     app_context->mouse.stage_y / 20.0f, 0);
+}
 
+// The body of actionMouseClickFocus at stage pixel (mx, my).
+// `click_focusable_only` is for the AVM1-under-AVM2 caller only: there the
+// child's level root (an AABB spanning the whole loaded movie) sits in
+// child_mc_cache in front of the field it contains, and the AVM2 pick has
+// already decided the click is AVM1's, so the scan skips clips that could
+// never take click focus. The pure-AVM1 scan (flag 0) is unchanged.
+static void mouse_click_focus_at(SWFAppContext* app_context, float mx, float my,
+                                 int click_focusable_only)
+{
 	// Find the frontmost MC that was hit by the click
 	// Iterate in reverse (highest depth = frontmost) to find topmost hit
 	MovieClip* hit_mc = NULL;
@@ -78525,6 +79121,7 @@ void actionMouseClickFocus(SWFAppContext* app_context)
 		float x1, y1, x2, y2;
 		if (!mc_get_pixel_aabb_ng(mc, &x1, &y1, &x2, &y2)) continue;
 		if (mx < x1 || mx > x2 || my < y1 || my > y2) continue;
+		if (click_focusable_only && !mc_is_focusable_by_click(mc)) continue;
 
 		hit_mc = mc;
 		break;

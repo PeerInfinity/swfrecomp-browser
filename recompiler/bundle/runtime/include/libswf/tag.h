@@ -122,6 +122,7 @@ void tagSetOpaqueBackground(SWFAppContext* app_context, size_t depth,
     u8 set, u32 rgb);
 // PlaceObject3 BitmapCache -> DisplayObject.cacheAsBitmap.
 void tagSetCacheAsBitmap(SWFAppContext* app_context, size_t depth, u8 on);
+void tagSetVisible(SWFAppContext* app_context, size_t depth, u8 visible);
 void tagSetFilterHighlight(SWFAppContext* app_context, size_t depth,
     double r, double g, double b, double a);
 void tagSetFilterColorMatrix(SWFAppContext* app_context, size_t depth, const float* matrix20);
@@ -303,6 +304,14 @@ size_t ng_getSpriteByteSize(size_t char_id);
 // Functions needed by action.c / tag.c in all build modes (NO_GRAPHICS, HEADLESS, GRAPHICS).
 // Implementations live in tag_stubs.c (NO_GRAPHICS/HEADLESS) or swf.c stubs (GRAPHICS).
 u16 ng_findFontIdByName(const char* name);
+// Embedded-font name registry (ng_shared.c): DefineFont2/3 own names,
+// DefineFontInfo/2 names and ExportAssets names, in tag order.
+void ng_register_swf_font(u16 font_id, const char* name, int bold, int italic);
+void tagRegisterFontName(SWFAppContext* app_context, u16 font_id, const char* name);
+void tagRegisterFontExport(SWFAppContext* app_context, const char* name, u16 char_id, int is_font);
+int ng_findEmbeddedFontId(const char* name, int bold, int italic, u16* out_id);
+u16 ng_resolveTextFormatFontId(const char* name, int bold, int italic);
+int ng_isSwfEmbeddedFont(u16 font_id);
 void ng_getTextExtent(u16 font_id, double font_size_px, const char* text, size_t text_len,
     double width_px, double* out_ascent, double* out_descent,
     double* out_width, double* out_height, double* out_tf_height, double* out_tf_width);

@@ -1556,15 +1556,22 @@ static int dynamic_bitmap_acquire(WebGPURenderContext* ctx, u32 src_w, u32 src_h
 	}
 	u32 pi = BITMAP_STATIC_POOLS + d;
 	BitmapPool* p = &ctx->bitmap_pools[pi];
-	if (p->used >= p->layers)
+	// render_webgpu_fit_dynamic_bitmap may have raised dynamic_bitmap_max since
+	// this pool was created, which changes the layer size of every pool whose
+	// nominal square it no longer clips; such a pool is reallocated at its new
+	// size (same reallocation path as growth, so draws already recorded this
+	// frame keep the old texture).
+	int resized = p->w != 0 && (p->w != pw || p->h != ph);
+	if (resized || p->used >= p->layers)
 	{
-		if (p->w == 0) p->cap = dynamic_pool_cap(ctx, pw, ph);
-		if (p->layers >= p->cap)
+		if (p->w == 0 || resized) p->cap = dynamic_pool_cap(ctx, pw, ph);
+		if (p->used >= p->cap)
 		{
 			dynamic_bitmap_capacity_hit(ctx, pi);
 			return 0;
 		}
-		u32 want = p->layers ? p->layers * 2 : DYNAMIC_POOL_INITIAL_LAYERS;
+		u32 want = p->layers ? p->layers : DYNAMIC_POOL_INITIAL_LAYERS;
+		if (p->used >= want) want *= 2;
 		if (want > p->cap) want = p->cap;
 		// Layers used earlier this frame stay in the old texture (their draws
 		// were recorded against the old bind group); `used` keeps counting so
@@ -1575,6 +1582,37 @@ static int dynamic_bitmap_acquire(WebGPURenderContext* ctx, u32 src_w, u32 src_h
 	*out_layer = p->used++;
 	*out_pool = pi;
 	*out_slot = ctx->dynamic_bitmap_base + ctx->dynamic_bitmap_used++;
+	return 1;
+}
+
+// Make room for a (src_w x src_h) dynamic source: raise dynamic_bitmap_max to
+// cover it, up to the device's maxTextureDimension2D - 1. The cap used to be a
+// constant fixed at init (AVM2: max(stage, 256, largest embedded bitmap)), and
+// every larger runtime BitmapData was skipped SILENTLY — from_shumway/acid/
+// acid-bitmap-draw_quality_* drew a 512x512 BitmapData on a 256x256 stage and
+// rendered blank. Raising on demand sizes the dynamic pools to what is actually
+// drawn: a movie that never draws a larger source keeps its pools (and its
+// pixels) exactly as before. Returns 0 only when the source exceeds the device
+// limit, and logs that once (a drop must never be silent).
+int render_webgpu_fit_dynamic_bitmap(WebGPURenderContext* ctx, u32 src_w, u32 src_h)
+{
+	if (src_w <= ctx->dynamic_bitmap_max_w && src_h <= ctx->dynamic_bitmap_max_h)
+		return 1;
+	u32 dmax = ctx->max_texture_dimension_2d ? ctx->max_texture_dimension_2d - 1 : 8191;
+	if (src_w > dmax || src_h > dmax)
+	{
+		static int reported = 0;
+		if (!reported)
+		{
+			reported = 1;
+			render_texture_problem("[render] a %ux%u dynamic bitmap is larger than the GPU's "
+			                       "%u px texture limit and will not draw", src_w, src_h,
+			                       ctx->max_texture_dimension_2d);
+		}
+		return 0;
+	}
+	if (src_w > ctx->dynamic_bitmap_max_w) ctx->dynamic_bitmap_max_w = src_w;
+	if (src_h > ctx->dynamic_bitmap_max_h) ctx->dynamic_bitmap_max_h = src_h;
 	return 1;
 }
 
@@ -1737,6 +1775,87 @@ static void build_static_bitmap_pools(WebGPURenderContext* ctx)
 		                       "will not draw", dropped, n, L, D);
 }
 
+// ---------------------------------------------------------------------------
+// Timeline stroke device-scale minimum width (hairline_*).
+//
+// The recompiler freezes a DefineShape stroke at max(width, 20) twips, i.e. at
+// least one STAGE pixel. Flash and Ruffle size it per draw in DEVICE pixels:
+// Ruffle tessellates with line_width = max(width_px, 1/scale)
+// (render/src/tessellator.rs:178-186), scale being
+// sqrt((|a+c|^2 + |b+d|^2)/2) of the full local->device matrix
+// (core/src/display_object/graphic.rs:254-259). A stroke under a 0.3x sprite
+// therefore stays 1 device px wide instead of shrinking to 0.3 px, and a
+// sub-20-twip stroke under a 2x parent stays 1 device px instead of 2.
+//
+// The recompiler also emits, per stroke run, its declared and emitted widths
+// and the centreline point of every vertex (SWF::stroke_run_data,
+// stroke_centre_data). Every stroke vertex is centre + (emitted half-width) *
+// d, so re-expanding a run to width W is vertex' = centre + k*(vertex -
+// centre), k = W / emitted. When a draw needs k != 1, its vertex range is
+// copied into the dynamic region with the stroke runs re-expanded, and that
+// copy is drawn instead; every other draw is untouched.
+//
+// The tables are weak so generated code without them still links (feature
+// off). The in-browser recompiler host (DYNAMIC_HOST) does not bridge them.
+// ---------------------------------------------------------------------------
+#ifndef DYNAMIC_HOST
+extern u32 __attribute__((weak)) stroke_run_count;
+extern u32 __attribute__((weak)) stroke_run_data[][5];
+extern u32 __attribute__((weak)) stroke_centre_data[][2];
+#endif
+
+static u32 hairline_run_n = 0;
+static const u32 (*hairline_runs)[5] = NULL;
+static const u32 (*hairline_centres)[2] = NULL;
+// CPU copy of every xform_buffer slot and of the current stage_to_ndc uniform,
+// i.e. the matrices the vertex shader composes for a draw.
+static float* hairline_xform = NULL;
+static u32 hairline_xform_slots = 0;
+static float hairline_stage[16];
+
+static void hairline_init(WebGPURenderContext* ctx)
+{
+	hairline_run_n = 0;
+	free(hairline_xform);
+	hairline_xform = NULL;
+	hairline_xform_slots = 0;
+#ifndef DYNAMIC_HOST
+	if (&stroke_run_count == NULL || stroke_run_data == NULL || stroke_centre_data == NULL)
+		return;
+	if (stroke_run_count == 0 || ctx->xform_slot_count == 0)
+		return;
+	hairline_xform = (float*) calloc((size_t) ctx->xform_slot_count * 16, sizeof(float));
+	if (hairline_xform == NULL)
+		return;
+	hairline_xform_slots = ctx->xform_slot_count;
+	if (ctx->transform_data && ctx->transform_data_size > 0)
+	{
+		size_t n = ctx->transform_data_size;
+		if (n > (size_t) hairline_xform_slots * 16 * sizeof(float))
+			n = (size_t) hairline_xform_slots * 16 * sizeof(float);
+		memcpy(hairline_xform, ctx->transform_data, n);
+	}
+	if (ctx->stage_to_ndc)
+		memcpy(hairline_stage, ctx->stage_to_ndc, sizeof(hairline_stage));
+	hairline_runs = (const u32 (*)[5]) stroke_run_data;
+	hairline_centres = (const u32 (*)[2]) stroke_centre_data;
+	hairline_run_n = stroke_run_count;
+#else
+	(void) ctx;
+#endif
+}
+
+static inline void hairline_note_xform(u32 transform_id, const float m[16])
+{
+	if (hairline_xform != NULL && transform_id < hairline_xform_slots)
+		memcpy(&hairline_xform[(size_t) transform_id * 16], m, 16 * sizeof(float));
+}
+
+static inline void hairline_note_stage(const float m[16])
+{
+	memcpy(hairline_stage, m, sizeof(hairline_stage));
+}
+
 static void create_buffers_and_upload(WebGPURenderContext* ctx)
 {
 	// Vertex buffer (shape geometry) — over-allocate for dynamic rendering.
@@ -1825,6 +1944,8 @@ static void create_buffers_and_upload(WebGPURenderContext* ctx)
 #endif
 	ctx->prev_dyn_vtx_used = 0;
 	ctx->prev_dyn_rect_count = 0;
+
+	hairline_init(ctx);
 
 	// Over-allocate uninv_mat and inv_mat buffers for dynamic gradient + bitmap matrices
 	#define MAX_DYNAMIC_GRADIENTS 64
@@ -2709,6 +2830,7 @@ void render_webgpu_set_background(WebGPURenderContext* ctx, u8 r, u8 g, u8 b)
 void render_webgpu_upload_stage_transform(WebGPURenderContext* ctx, const float matrix[16])
 {
 	wgpuQueueWriteBuffer(ctx->queue, ctx->stage_to_ndc_buf, 0, matrix, 16 * sizeof(float));
+	hairline_note_stage(matrix);
 }
 
 #if defined(__EMSCRIPTEN__) && !defined(OFFSCREEN_RENDER)
@@ -2910,6 +3032,7 @@ void render_webgpu_open_pass(WebGPURenderContext* ctx)
 	// Upload stage_to_ndc uniform
 	wgpuQueueWriteBuffer(ctx->queue, ctx->stage_to_ndc_buf, 0,
 	                     ctx->stage_to_ndc, 16 * sizeof(float));
+	hairline_note_stage(ctx->stage_to_ndc);
 	wgpuRenderPassEncoderSetBindGroup(ctx->render_pass, 1, ctx->vertex_uniform_bg, 0, NULL);
 
 	// Initialize extra_transform_id to 0, extra_transform to identity,
@@ -2968,6 +3091,88 @@ static size_t mask_stencil_vert_count(const WebGPURenderContext* ctx,
 }
 
 // ---------------------------------------------------------------------------
+// hairline_restage: the device-scale stroke width pass described above
+// hairline_init. Returns the vertex offset to draw: `offset` itself, or the
+// base of a re-expanded copy in the dynamic region.
+// ---------------------------------------------------------------------------
+static inline void stage_dyn_verts(WebGPURenderContext* ctx, u32 vert_base,
+	const void* verts, u32 vcount);
+
+static size_t hairline_restage(WebGPURenderContext* ctx, size_t offset,
+                               size_t num_verts, u32 transform_id)
+{
+	if (hairline_run_n == 0 || num_verts == 0) return offset;
+	if (transform_id >= hairline_xform_slots) return offset;
+	const size_t end = offset + num_verts;
+
+	// First run ending after `offset` (runs are emitted in vertex order).
+	u32 lo = 0, hi = hairline_run_n;
+	while (lo < hi)
+	{
+		u32 mid = lo + (hi - lo) / 2;
+		if ((size_t) hairline_runs[mid][0] + hairline_runs[mid][1] <= offset) lo = mid + 1;
+		else hi = mid;
+	}
+	if (lo >= hairline_run_n || hairline_runs[lo][0] >= end) return offset;
+
+	// Local twips -> device px: diag(W/2, H/2) * (stage_to_ndc * xform), the
+	// 2x2 part of the column-major mat4s. Ruffle's matrix is twips -> device
+	// twips, hence the 20.
+	const float* t = &hairline_xform[(size_t) transform_id * 16];
+	const float* p = hairline_stage;
+	const double a = (double) p[0] * t[0] + (double) p[4] * t[1];
+	const double b = (double) p[1] * t[0] + (double) p[5] * t[1];
+	const double c = (double) p[0] * t[4] + (double) p[4] * t[5];
+	const double d = (double) p[1] * t[4] + (double) p[5] * t[5];
+	const double hw = 20.0 * 0.5 * (double) ctx->width;
+	const double hh = 20.0 * 0.5 * (double) ctx->height;
+	const double sx = fabs(hw * (a + c));
+	const double sy = fabs(hh * (b + d));
+	const double scale = sqrt((sx * sx + sy * sy) / 2.0);
+	const double min_twips = (scale > 1e-6) ? 20.0 / scale : 20.0;
+
+	int changed = 0;
+	for (u32 r = lo; r < hairline_run_n && hairline_runs[r][0] < end; r++)
+	{
+		double w = (double) hairline_runs[r][3];
+		if (w < min_twips) w = min_twips;
+		if (fabs(w / (double) hairline_runs[r][4] - 1.0) > 1e-4) { changed = 1; break; }
+	}
+	if (!changed) return offset;
+
+	if (ctx->dynamic_vertex_used + num_verts > MAX_DYNAMIC_VERTICES) return offset;
+	u32 vert_base = ctx->dynamic_vertex_base + ctx->dynamic_vertex_used;
+	u32* verts = (u32*) malloc(num_verts * 4 * sizeof(u32));
+	if (verts == NULL) return offset;
+	ctx->dynamic_vertex_used += (u32) num_verts;
+	memcpy(verts, ctx->shape_data + offset * 4 * sizeof(u32), num_verts * 4 * sizeof(u32));
+
+	for (u32 r = lo; r < hairline_run_n && hairline_runs[r][0] < end; r++)
+	{
+		double w = (double) hairline_runs[r][3];
+		if (w < min_twips) w = min_twips;
+		const float k = (float) (w / (double) hairline_runs[r][4]);
+		const size_t rs = hairline_runs[r][0], rn = hairline_runs[r][1];
+		for (size_t v = 0; v < rn; v++)
+		{
+			const size_t gv = rs + v;
+			if (gv < offset || gv >= end) continue;
+			const u32* cen = hairline_centres[hairline_runs[r][2] + v];
+			u32* dst = &verts[(gv - offset) * 4];
+			union { float f; u32 u; } vx, vy, cx, cy;
+			vx.u = dst[0]; vy.u = dst[1]; cx.u = cen[0]; cy.u = cen[1];
+			vx.f = cx.f + k * (vx.f - cx.f);
+			vy.f = cy.f + k * (vy.f - cy.f);
+			dst[0] = vx.u; dst[1] = vy.u;
+		}
+	}
+
+	stage_dyn_verts(ctx, vert_base, verts, (u32) num_verts);
+	free(verts);
+	return vert_base;
+}
+
+// ---------------------------------------------------------------------------
 // render_webgpu_draw_shape
 // ---------------------------------------------------------------------------
 void render_webgpu_draw_shape(WebGPURenderContext* ctx, size_t offset,
@@ -2976,6 +3181,8 @@ void render_webgpu_draw_shape(WebGPURenderContext* ctx, size_t offset,
 	if (!ctx->renderer_ok) return;
 	// Ruffle rasterises only a masker's fill geometry into the stencil.
 	num_verts = mask_stencil_vert_count(ctx, offset, num_verts);
+	// Timeline strokes thinner than one device pixel are re-expanded.
+	offset = hairline_restage(ctx, offset, num_verts, transform_id);
 	// Set vertex buffer with byte offset
 	uint64_t byte_offset = offset * 4 * sizeof(u32);
 	uint64_t byte_size = num_verts * 4 * sizeof(u32);
@@ -3339,7 +3546,7 @@ void render_webgpu_draw_bitmap_quad_scaled(WebGPURenderContext* ctx,
 {
 	if (!ctx->renderer_ok || argb_pixels == NULL) return;
 	if (src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0) return;
-	if (src_w > ctx->dynamic_bitmap_max_w || src_h > ctx->dynamic_bitmap_max_h) return;
+	if (!render_webgpu_fit_dynamic_bitmap(ctx, src_w, src_h)) return;
 	if (ctx->dynamic_vertex_used + 6 > MAX_DYNAMIC_VERTICES) return;
 
 	// Allocate a dynamic slot + a pool layer that fits the source.
@@ -3500,7 +3707,7 @@ void render_webgpu_draw_bitmap_tris(WebGPURenderContext* ctx,
 {
 	if (!ctx->renderer_ok || vertex_count == 0 || xy_pairs == NULL) return;
 	if (argb_pixels == NULL || src_w == 0 || src_h == 0) return;
-	if (src_w > ctx->dynamic_bitmap_max_w || src_h > ctx->dynamic_bitmap_max_h) return;
+	if (!render_webgpu_fit_dynamic_bitmap(ctx, src_w, src_h)) return;
 	if (ctx->dynamic_vertex_used + vertex_count > MAX_DYNAMIC_VERTICES)
 		vertex_count = MAX_DYNAMIC_VERTICES - ctx->dynamic_vertex_used;
 	if (vertex_count == 0) return;
@@ -4053,6 +4260,7 @@ static void mat4_multiply(float* out, const float* A, const float* B)
 static inline void xform_slot_write(WebGPURenderContext* ctx, u32 transform_id,
                                     const float composed[16])
 {
+	hairline_note_xform(transform_id, composed);
 	if (ctx->xform_mirror != NULL && transform_id < ctx->xform_slot_count)
 	{
 		float* slot = &ctx->xform_mirror[(size_t)transform_id * 16];
@@ -4714,6 +4922,17 @@ void render_webgpu_ensure_filter_resources(WebGPURenderContext* ctx)
 		rpd.multisample.mask = 0xFFFFFFFF;
 		rpd.depthStencil = &ds;
 		ctx->compose_pipeline = wgpuDeviceCreateRenderPipeline(ctx->device, &rpd);
+		// Twin for composing INTO filter_tex_b (a non-final filter of a chain;
+		// render_webgpu_compose_filter_to_layer). Sample count 1 and no
+		// depth-stencil are deliberate, not a stand-in for MSAA_SAMPLES: the
+		// target is the single-sample, stencil-less filter texture. Every
+		// pipeline that draws into an MSAA target keeps MSAA_SAMPLES.
+		rpd.label = WGPU_LABEL("compose_layer_pipeline");
+		rpd.multisample.count = 1;
+		rpd.depthStencil = NULL;
+		ctx->compose_layer_pipeline = wgpuDeviceCreateRenderPipeline(ctx->device, &rpd);
+		rpd.multisample.count = MSAA_SAMPLES;
+		rpd.depthStencil = &ds;
 		wgpuShaderModuleRelease(sm);
 
 		// --- Alpha-mask composite (s17 P3) -------------------------------
@@ -5583,6 +5802,71 @@ void render_webgpu_compose_filter(WebGPURenderContext* ctx, int kind,
 	wgpuBindGroupRelease(bg);
 }
 
+void render_webgpu_compose_filter_to_layer(WebGPURenderContext* ctx, int kind,
+	float blur_off_x, float blur_off_y,
+	float c1r, float c1g, float c1b, float c1a,
+	float c2r, float c2g, float c2b, float c2a,
+	float strength, int variant, int knockout, int composite_source)
+{
+	if (!ctx->renderer_ok || ctx->compose_layer_pipeline == NULL) return;
+
+	float params[20] = {0};
+	params[0] = c1r; params[1] = c1g; params[2] = c1b; params[3] = c1a;
+	params[4] = c2r; params[5] = c2g; params[6] = c2b; params[7] = c2a;
+	params[8] = blur_off_x; params[9] = blur_off_y;
+	params[12] = (float)kind;
+	params[13] = (float)variant;
+	params[14] = knockout ? 1.0f : 0.0f;
+	params[15] = composite_source ? 1.0f : 0.0f;
+	params[16] = strength;
+	u32 params_offset = filter_uniform_push(ctx, params, 80);
+
+	WGPUBindGroupEntry bg_entries[4] = {0};
+	bg_entries[0].binding = 0;
+	bg_entries[0].textureView = ctx->filter_view_a;   // blurred
+	bg_entries[1].binding = 1;
+	bg_entries[1].sampler = ctx->filter_sampler;
+	bg_entries[2].binding = 2;
+	bg_entries[2].buffer = ctx->filter_uniform_ring;
+	bg_entries[2].offset = params_offset;
+	bg_entries[2].size = 80;
+	bg_entries[3].binding = 3;
+	bg_entries[3].textureView = ctx->filter_src_view; // unblurred source
+
+	WGPUBindGroupDescriptor bg_desc = {0};
+	bg_desc.layout = ctx->compose_bgl;
+	bg_desc.entryCount = 4;
+	bg_desc.entries = bg_entries;
+	WGPUBindGroup bg = wgpuDeviceCreateBindGroup(ctx->device, &bg_desc);
+
+	WGPURenderPassColorAttachment color_att = {0};
+	color_att.depthSlice = WGPU_DEPTH_SLICE_UNDEFINED;
+	color_att.view = ctx->filter_view_b;
+	color_att.loadOp = WGPULoadOp_Clear;
+	color_att.storeOp = WGPUStoreOp_Store;
+	color_att.clearValue = (WGPUColor){0, 0, 0, 0};
+	WGPURenderPassDescriptor rp_desc = {0};
+	rp_desc.label = WGPU_LABEL("compose_to_layer");
+	rp_desc.colorAttachmentCount = 1;
+	rp_desc.colorAttachments = &color_att;
+	WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(ctx->encoder, &rp_desc);
+	wgpuRenderPassEncoderSetPipeline(pass, ctx->compose_layer_pipeline);
+	wgpuRenderPassEncoderSetBindGroup(pass, 0, bg, 0, NULL);
+	wgpuRenderPassEncoderDraw(pass, 6, 1, 0, 0);
+	wgpuRenderPassEncoderEnd(pass);
+	wgpuRenderPassEncoderRelease(pass);
+	wgpuBindGroupRelease(bg);
+
+	WGPUTexelCopyTextureInfo src = {0};
+	src.texture = ctx->filter_tex_b;
+	src.aspect = WGPUTextureAspect_All;
+	WGPUTexelCopyTextureInfo dst = {0};
+	dst.texture = ctx->filter_tex_a;
+	dst.aspect = WGPUTextureAspect_All;
+	WGPUExtent3D extent = {(u32)ctx->width, (u32)ctx->height, 1};
+	wgpuCommandEncoderCopyTextureToTexture(ctx->encoder, &src, &dst, &extent);
+}
+
 // Composite an ALPHA MASK (s17 P3): filter_tex_a holds the maskee layer and
 // filter_src_tex the mask layer (put there by snapshot_filter_source before the
 // second offscreen pass overwrote filter_tex_a). Draws maskee * mask.a over the
@@ -6090,6 +6374,7 @@ void render_webgpu_free(SWFAppContext* app_context, WebGPURenderContext* ctx)
 	if (ctx->filter_src_tex) wgpuTextureRelease(ctx->filter_src_tex);
 	if (ctx->alpha_mask_pipeline) wgpuRenderPipelineRelease(ctx->alpha_mask_pipeline);
 	if (ctx->compose_pipeline) wgpuRenderPipelineRelease(ctx->compose_pipeline);
+	if (ctx->compose_layer_pipeline) wgpuRenderPipelineRelease(ctx->compose_layer_pipeline);
 	if (ctx->compose_bgl) wgpuBindGroupLayoutRelease(ctx->compose_bgl);
 	if (ctx->compose_pipeline_layout) wgpuPipelineLayoutRelease(ctx->compose_pipeline_layout);
 	// DisplacementMapFilter (cut 2) — all NULL unless the movie used one.

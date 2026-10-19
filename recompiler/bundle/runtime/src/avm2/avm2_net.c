@@ -49,6 +49,7 @@
 #include <avm2/avm2_gc.h>
 #include <avm2/avm2_object.h>
 #include <avm2/avm2_value.h>
+#include <actionmodern/video_codec.h>   // NetStream FLV video decode
 #include <amf_packet.h>
 #include <dialog_events.h>
 #include <libswf/swf.h>   // DataFileEntry / findDataFile (bundled response packets)
@@ -1964,10 +1965,13 @@ static Avm2Value ns_get_zero(Avm2Activation* act)
 static Avm2Object* g_ns_pending_meta[NS_MAX_PENDING_META];
 static int g_ns_pending_meta_count;
 
+static void ns_video_mark_roots(void);
+
 static void gc_mark_roots_netstream(void)
 {
 	for (int i = 0; i < g_ns_pending_meta_count; i++)
 		avm2_gc_mark_object(g_ns_pending_meta[i]);
+	ns_video_mark_roots();
 }
 
 // Locate the AMF0 body of the first SCRIPTDATA tag (type 18) whose name is
@@ -2008,6 +2012,214 @@ static const unsigned char* flv_find_metadata(const unsigned char* data,
 	return NULL;
 }
 
+// --- FLV video ------------------------------------------------------------
+//
+// The media half of play() on a bundled .flv: video tags are demuxed on the
+// stream's own clock and decoded into the stream's "last decoded bitmap",
+// which an attached flash.media.Video draws (avm2_display.c, render walk).
+// Audio is not played. Port of Ruffle core/src/streams.rs NetStream::tick +
+// flv_video_tag, reduced to what a bundled file needs:
+//
+//   * play() activates the stream, but the bytes arrive through the loader
+//     future, i.e. after the tick's StreamManager pass. So the FIRST tick
+//     after play() does nothing (Ruffle: stream type not yet sniffable, early
+//     return before stream_time moves), and every tick after it advances
+//     stream_time by one frame (dt = 1000/fps ms) and processes every tag
+//     whose timestamp is < the new stream_time.
+//   * A tag at or past that time is lookahead: video/script lookahead tags are
+//     skipped without consuming them, and the scan stops at the first
+//     lookahead tag once five lookahead AUDIO tags have been seen.
+//   * Codec 7 (H.264): AVCPacketType 0 configures the decoder from the
+//     AVCDecoderConfigurationRecord, 1 decodes the length-prefixed NALUs
+//     (composition time ignored, as Ruffle ignores it), 2 is a no-op.
+//     The decoder's own reorder delay holds B-frame streams back, so the
+//     first packets of such a stream produce no picture — which is Ruffle's
+//     DecoderNoOutputFrame, and leaves the previous bitmap on screen.
+//   * Codec 2 (Sorenson Spark) goes through the persistent decoder with
+//     UseVideoPacketValue deblocking (streams.rs registers every FLV stream
+//     that way). Other codecs are not wired up here yet.
+//
+// No pause/seek/close handling: those methods stay no-ops, so a stream
+// plays from play() to end of file.
+
+typedef struct NsVideoStream
+{
+	Avm2Object* ns;               // GC root while the stream is active
+	const unsigned char* data;    // bundled FLV bytes (DataFileEntry-owned)
+	size_t len;
+	size_t offset;                // next unconsumed tag header
+	double stream_time;           // ms
+	uint8_t loaded;               // the "bytes have arrived" tick has passed
+	int codec_id;                 // codec of the current decoder, 0 = none
+	VideoDecoderCtx* dec;
+	uint32_t* argb;               // last decoded frame, premultiplied ARGB
+	int w, h;
+} NsVideoStream;
+
+#define NS_MAX_VIDEO_STREAMS 8
+static NsVideoStream g_ns_video[NS_MAX_VIDEO_STREAMS];
+static int g_ns_video_count;
+
+static void ns_video_mark_roots(void)
+{
+	for (int i = 0; i < g_ns_video_count; i++)
+		if (g_ns_video[i].ns != NULL) avm2_gc_mark_object(g_ns_video[i].ns);
+}
+
+static NsVideoStream* ns_video_find(const Avm2Object* ns)
+{
+	for (int i = 0; i < g_ns_video_count; i++)
+		if (g_ns_video[i].ns == ns) return &g_ns_video[i];
+	return NULL;
+}
+
+// play() on a bundled FLV: (re)start the media half from the top of the file.
+// A replay keeps the last decoded bitmap on screen until the new stream
+// decodes one (Ruffle's reset_buffer leaves last_decoded_bitmap alone).
+static void ns_video_start(Avm2Object* ns, const unsigned char* data, size_t len)
+{
+	if (data == NULL || len < 13 || data[0] != 'F' || data[1] != 'L' || data[2] != 'V')
+		return;
+	NsVideoStream* v = ns_video_find(ns);
+	if (v == NULL)
+	{
+		if (g_ns_video_count >= NS_MAX_VIDEO_STREAMS) return;
+		v = &g_ns_video[g_ns_video_count++];
+		memset(v, 0, sizeof(*v));
+		v->ns = ns;
+	}
+	video_decoder_destroy(v->dec);
+	v->dec = NULL;
+	v->codec_id = 0;
+	v->data = data;
+	v->len = len;
+	size_t off = ((size_t) data[5] << 24) | ((size_t) data[6] << 16)
+	           | ((size_t) data[7] << 8) | (size_t) data[8];   // DataOffset
+	if (off < 9 || off > len) off = 9;
+	v->offset = off + 4;   // first PreviousTagSize
+	v->stream_time = 0;
+	v->loaded = 0;
+}
+
+static void ns_video_store_frame(NsVideoStream* v, unsigned char* rgba, int w, int h)
+{
+	size_t n = (size_t) w * (size_t) h;
+	uint32_t* argb = (uint32_t*) malloc(n * sizeof(uint32_t));
+	if (argb == NULL) { free(rgba); return; }
+	for (size_t p = 0; p < n; p++)
+	{
+		argb[p] = ((uint32_t) rgba[p * 4 + 3] << 24) | ((uint32_t) rgba[p * 4 + 0] << 16)
+		        | ((uint32_t) rgba[p * 4 + 1] << 8) | (uint32_t) rgba[p * 4 + 2];
+	}
+	free(rgba);
+	free(v->argb);
+	v->argb = argb;
+	v->w = w;
+	v->h = h;
+}
+
+// One FLV video tag body (from its frame-type/codec byte on).
+static void ns_video_tag(NsVideoStream* v, const unsigned char* body, size_t size)
+{
+	if (size < 1) return;
+	int frame_type = (body[0] >> 4) & 0xF;
+	int codec_id = body[0] & 0xF;
+	if (frame_type == 5) return;   // command frame: no picture
+
+	const unsigned char* payload = body + 1;
+	size_t plen = size - 1;
+	if (codec_id == 7)
+	{
+		if (plen < 4) return;
+		int packet_type = payload[0];
+		payload += 4;   // AVCPacketType + CompositionTime
+		plen -= 4;
+		if (packet_type == 0)
+		{
+			if (v->dec == NULL || v->codec_id != 7)
+			{
+				video_decoder_destroy(v->dec);
+				v->dec = video_avc_decoder_create();
+				v->codec_id = v->dec != NULL ? 7 : 0;
+			}
+			if (v->dec != NULL)
+				video_avc_decoder_configure(v->dec, payload, (int) plen);
+			return;
+		}
+		if (packet_type != 1 || v->codec_id != 7 || plen == 0) return;
+	}
+	else if (codec_id == 2)
+	{
+		if (v->dec == NULL || v->codec_id != 2)
+		{
+			video_decoder_destroy(v->dec);
+			v->dec = video_decoder_create(2, VIDEO_DEBLOCK_USE_PACKET_VALUE);
+			v->codec_id = v->dec != NULL ? 2 : 0;
+		}
+		if (v->dec == NULL || plen == 0) return;
+	}
+	else
+	{
+		return;
+	}
+
+	int w = 0, h = 0;
+	unsigned char* rgba = NULL;
+	if (video_decoder_decode(v->dec, frame_type, payload, (int) plen, &w, &h, &rgba)
+	    && rgba != NULL && w > 0 && h > 0)
+		ns_video_store_frame(v, rgba, w, h);
+}
+
+static void ns_video_tick_one(NsVideoStream* v, double dt)
+{
+	if (!v->loaded)
+	{
+		v->loaded = 1;
+		return;
+	}
+	double max_time = v->stream_time + dt;
+	int lookahead_audio_left = 5;
+	size_t off = v->offset;
+	while (off + 11 <= v->len)
+	{
+		const unsigned char* t = v->data + off;
+		unsigned int tag_type = t[0] & 0x1F;
+		size_t tag_size = ((size_t) t[1] << 16) | ((size_t) t[2] << 8) | (size_t) t[3];
+		uint32_t ts = ((uint32_t) t[7] << 24) | ((uint32_t) t[4] << 16)
+		            | ((uint32_t) t[5] << 8) | (uint32_t) t[6];
+		size_t body = off + 11;
+		if (body + tag_size > v->len) break;   // truncated: end of data
+		int lookahead = (double) ts >= max_time;
+		if (lookahead && lookahead_audio_left == 0) break;
+		if (tag_type == 8 && lookahead) lookahead_audio_left--;
+		if (tag_type == 9 && !lookahead) ns_video_tag(v, v->data + body, tag_size);
+		off = body + tag_size + 4;   // skip the trailing PreviousTagSize
+		if (!lookahead) v->offset = off;
+	}
+	v->stream_time = max_time;
+}
+
+static void ns_video_tick(void)
+{
+	if (g_ns_video_count == 0) return;
+	double fps = (double) (int16_t) avm2_generated_frame_rate / 256.0;
+	if (fps <= 0) fps = 24.0;
+	double dt = 1000.0 / fps;
+	for (int i = 0; i < g_ns_video_count; i++)
+		ns_video_tick_one(&g_ns_video[i], dt);
+}
+
+int avm2_net_netstream_video_frame(const Avm2Object* ns, const uint32_t** out_argb,
+                                   int* out_w, int* out_h)
+{
+	NsVideoStream* v = ns != NULL ? ns_video_find(ns) : NULL;
+	if (v == NULL || v->argb == NULL) return 0;
+	*out_argb = v->argb;
+	*out_w = v->w;
+	*out_h = v->h;
+	return 1;
+}
+
 // play(name) — the script-data half only. A name that resolves to a bundled
 // .flv with an onMetaData tag queues the callback for the end of the frame
 // (Flash never delivers it inside the calling frame: netstream_flv_date traces
@@ -2036,6 +2248,8 @@ static Avm2Value ns_play(Avm2Activation* act)
 	if (d == NULL) d = findDataFile(name);
 	if (d == NULL || d->content == NULL) return avm2_undefined();
 
+	ns_video_start(self, (const unsigned char*) d->content, (size_t) d->content_length);
+
 	size_t mlen = 0;
 	const unsigned char* meta = flv_find_metadata(
 		(const unsigned char*) d->content, (size_t) d->content_length, &mlen);
@@ -2055,6 +2269,9 @@ static Avm2Value ns_play(Avm2Activation* act)
 // Flash raises no error for a missing script-data handler.
 void avm2_net_deliver_netstream_meta(Avm2Context* ctx)
 {
+	// The media half rides the same per-tick hook (Ruffle runs
+	// StreamManager::tick once per player tick, after the frame).
+	ns_video_tick();
 	if (g_ns_pending_meta_count == 0) return;
 	Avm2Object* batch[NS_MAX_PENDING_META];
 	int count = g_ns_pending_meta_count;

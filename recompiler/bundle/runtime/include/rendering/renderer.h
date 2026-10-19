@@ -27,6 +27,7 @@ typedef WebGPURenderContext RenderContext;
 #define renderer_draw_bitmap_quad(ctx, px, w, h, x, y, t, c) render_webgpu_draw_bitmap_quad(ctx, px, w, h, x, y, t, c)
 #define renderer_draw_bitmap_quad_scaled(ctx, px, sw, sh, dw, dh, x, y, t, c) render_webgpu_draw_bitmap_quad_scaled(ctx, px, sw, sh, dw, dh, x, y, t, c)
 #define renderer_draw_bitmap_tris(ctx, v, n, px, sw, sh, m, rep, smo, t, c) render_webgpu_draw_bitmap_tris(ctx, v, n, px, sw, sh, m, rep, smo, t, c)
+#define renderer_fit_dynamic_bitmap(ctx, w, h) render_webgpu_fit_dynamic_bitmap(ctx, w, h)
 #define renderer_begin_clip_mask(ctx)              render_webgpu_begin_clip_mask(ctx)
 #define renderer_end_clip_mask(ctx)                render_webgpu_end_clip_mask(ctx)
 #define renderer_end_clip(ctx)                     render_webgpu_end_clip(ctx)
@@ -61,6 +62,8 @@ typedef WebGPURenderContext RenderContext;
 #define renderer_snapshot_filter_source(ctx)           render_webgpu_snapshot_filter_source(ctx)
 #define renderer_compose_filter(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs) \
 	render_webgpu_compose_filter(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs)
+#define renderer_compose_filter_to_layer(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs) \
+	render_webgpu_compose_filter_to_layer(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs)
 #define renderer_ensure_filter_resources(ctx)          render_webgpu_ensure_filter_resources(ctx)
 // s17 P3: composite the alpha-mask pair (maskee layer x mask layer alpha).
 #define renderer_composite_alpha_mask(ctx)             render_webgpu_composite_alpha_mask(ctx)
@@ -93,6 +96,7 @@ typedef FlashbangContext RenderContext;
 #define renderer_draw_bitmap_quad(ctx, px, w, h, x, y, t, c) ((void)0)
 #define renderer_draw_bitmap_quad_scaled(ctx, px, sw, sh, dw, dh, x, y, t, c) ((void)0)
 #define renderer_draw_bitmap_tris(ctx, v, n, px, sw, sh, m, rep, smo, t, c) ((void)0)
+#define renderer_fit_dynamic_bitmap(ctx, w, h) (0)
 #define renderer_begin_clip_mask(ctx)              ((void)0)
 #define renderer_end_clip_mask(ctx)                ((void)0)
 #define renderer_end_clip(ctx)                     ((void)0)
@@ -123,6 +127,7 @@ typedef FlashbangContext RenderContext;
 #define renderer_composite_filtered(ctx, ox, oy, tr, tg, tb, ta) ((void)0)
 #define renderer_snapshot_filter_source(ctx)           ((void)0)
 #define renderer_compose_filter(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs) ((void)0)
+#define renderer_compose_filter_to_layer(ctx, k, ox, oy, c1r, c1g, c1b, c1a, c2r, c2g, c2b, c2a, st, va, ko, cs) ((void)0)
 #define renderer_ensure_filter_resources(ctx)          ((void)0)
 #define renderer_composite_alpha_mask(ctx)             ((void)0)
 #define renderer_run_displacement(ctx, mp, mw, mh, rx, ry, rw, rh, px, py, sx, sy, vs, cx, cy, md, cr, cg, cb, ca) ((void)0)

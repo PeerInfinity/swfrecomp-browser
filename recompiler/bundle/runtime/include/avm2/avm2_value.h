@@ -24,8 +24,10 @@ typedef struct Avm2Context Avm2Context;
 // Interned or heap string: UTF-8 bytes + explicit length (ABC strings may
 // embed NULs). Static pool entries are emitted by the recompiler; runtime
 // strings are heap-allocated. `utf8` is also NUL-terminated for printf
-// convenience wherever the runtime creates one; pool entries emitted by
-// the recompiler are NUL-terminated too (string literals).
+// convenience wherever the runtime creates one, EXCEPT a stale prefix of an
+// append buffer (AVM2_STR_GC_DEP, below): C-string consumers go through
+// avm2_string_cstr(). Pool entries emitted by the recompiler are
+// NUL-terminated too (string literals).
 //
 // GC (avm2_gc.c string census): heap strings created by avm2_string_new /
 // avm2_string_concat enroll in an intrusive census and are swept when
@@ -43,6 +45,29 @@ typedef struct Avm2String
 
 #define AVM2_STR_GC_HEAP 1u  // heap-allocated + census-enrolled
 #define AVM2_STR_GC_MARK 2u  // reachable this cycle (cleared each collect)
+#define AVM2_STR_GC_BUF  4u  // append buffer (never user-visible; len = frontier)
+#define AVM2_STR_GC_DEP  8u  // header whose bytes live in an AVM2_STR_GC_BUF
+
+// Append-in-place buffers (avm2_string_concat; avmplus String::append). A
+// long `a + b` whose `a` ends at its buffer's frontier writes `b` in place and
+// returns a fresh DEP header sharing the buffer, so `s += x` loops are O(n)
+// instead of O(n^2) bytes. Layout of a BUF allocation:
+//   [Avm2String header][AVM2_STRBUF_PREFIX bytes: uint32 capacity][bytes...]
+// with header.utf8 == the bytes and header.len == the frontier. A DEP
+// header's utf8 is always the START of its buffer's bytes (a prefix), so the
+// owner is found by pointer arithmetic.
+//
+// CONTRACT: an older prefix header loses `utf8[len] == '\0'` once a later
+// append overwrites that byte (the bytes stay readable, the buffer is always
+// NUL-terminated at its frontier). Every consumer that needs a C string must
+// use avm2_string_cstr(); everything else must honour `len`.
+#define AVM2_STRBUF_PREFIX 8u
+#define AVM2_STRBUF_MIN_LEN 4096u  // results shorter than this never share
+
+static inline Avm2String* avm2_strbuf_owner(const Avm2String* dep)
+{
+	return ((Avm2String*) (void*) (dep->utf8 - AVM2_STRBUF_PREFIX)) - 1;
+}
 
 typedef enum Avm2ValueKind
 {
@@ -130,6 +155,10 @@ const Avm2String* avm2_string_new(Avm2Context* ctx, const char* utf8, uint32_t l
 const Avm2String* avm2_string_from_literal(Avm2Context* ctx, const char* lit);
 const Avm2String* avm2_string_concat(Avm2Context* ctx, const Avm2String* a, const Avm2String* b);
 bool avm2_string_equals(const Avm2String* a, const Avm2String* b);
+// NUL-terminated view of `s`: s->utf8 itself when terminated, else (a stale
+// prefix of an append buffer) a fresh heap copy, valid until the next
+// between-tick collection.
+const char* avm2_string_cstr(Avm2Context* ctx, const Avm2String* s);
 // UTF-16 code-unit-order comparison (-1/0/1).
 int avm2_string_utf16_cmp(const Avm2String* a, const Avm2String* b);
 

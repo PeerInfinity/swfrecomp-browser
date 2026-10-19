@@ -388,7 +388,8 @@ static uint32_t g_census_sorted_count = 0, g_census_sorted_cap = 0;
 
 // Sorted snapshot of the STRING census, rebuilt each cycle. Unlike objects,
 // string lookups are RANGE-based: a census string's allocation spans
-// [s, s + sizeof(Avm2String) + s->len + 1) (header + inline bytes), and live
+// [s, str_alloc_end(s)) (header + inline bytes; an append buffer's span also
+// covers its capacity prefix, a dependent header's is the header alone), and live
 // references may point at the header (Avm2Value.u.str), at the bytes (a
 // by-value Avm2String copy's utf8, e.g. Avm2DynProp.name), or anywhere inside
 // (conservative ext-scan words). Any pointer into the span marks the string.
@@ -399,6 +400,15 @@ static uint32_t g_str_census_count = 0, g_str_census_cap = 0;
 // rejecting them before the binary search keeps the scan near its old cost.
 static const char* g_str_census_lo = NULL;
 static const char* g_str_census_hi = NULL;
+
+// One past the end of a census string's allocation (the range-lookup span).
+static inline const char* str_alloc_end(const Avm2String* s)
+{
+	if (s->gc_flags & AVM2_STR_GC_DEP) return (const char*) (s + 1);
+	if (s->gc_flags & AVM2_STR_GC_BUF)
+		return (const char*) (s + 1) + AVM2_STRBUF_PREFIX + s->len + 1;
+	return (const char*) (s + 1) + s->len + 1;
+}
 
 static int str_census_ptr_cmp(const void* a, const void* b)
 {
@@ -423,15 +433,26 @@ void avm2_gc_mark_string_bytes(const void* p)
 	}
 	if (lo == 0) return;
 	Avm2String* s = g_str_census_sorted[lo - 1];
-	if ((const char*) p < (const char*) s + sizeof(Avm2String) + s->len + 1)
+	if ((const char*) p < str_alloc_end(s))
 	{
 		s->gc_flags |= AVM2_STR_GC_MARK;
+		// A dependent header keeps its append buffer (the bytes) alive.
+		if (s->gc_flags & AVM2_STR_GC_DEP)
+			avm2_strbuf_owner(s)->gc_flags |= AVM2_STR_GC_MARK;
 	}
 }
 
 void avm2_gc_mark_string(const Avm2String* s)
 {
 	if (s == NULL) return;
+	if (s->gc_flags & AVM2_STR_GC_DEP)
+	{
+		// An append-buffer header (or a by-value copy of one): mark it and the
+		// buffer holding its bytes — O(1), no range lookup.
+		((Avm2String*) s)->gc_flags |= AVM2_STR_GC_MARK;
+		avm2_strbuf_owner(s)->gc_flags |= AVM2_STR_GC_MARK;
+		return;
+	}
 	if ((s->gc_flags & AVM2_STR_GC_HEAP) && s->utf8 == (const char*) (s + 1))
 	{
 		// The census header itself (every string minted by avm2_string_new /
@@ -963,7 +984,7 @@ static void gc_collect(Avm2Context* ctx)
 	{
 		Avm2String* last = g_str_census_sorted[g_str_census_count - 1];
 		g_str_census_lo = (const char*) g_str_census_sorted[0];
-		g_str_census_hi = (const char*) last + sizeof(Avm2String) + last->len + 1;
+		g_str_census_hi = str_alloc_end(last);
 	}
 
 	if (g_gc_time) t_strsnap = gc_now_ms();

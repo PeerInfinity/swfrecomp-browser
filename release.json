@@ -2,13 +2,13 @@
  "$comment": "The release manifest. This repository carries ONE release of the in-browser recompiler page of PeerInfinity/SWFRecomp-CC. `source.commit` is the commit whose build inputs (SWFRecomp/, SWFModernRuntime/) produced every BUILT file (`build.files`, sha256 each); `source.page.commit` is the commit the page files (docs/recompiler/) come from. `source.buildInputsUnchanged` is the measured `git diff --name-only` of the build inputs between the two, which may name only paths that are not build inputs. Written by SWFRecomp-CC tools/browser-release/make_release.py; nothing here is hand-edited except README.md, LICENSE, licenses/, catalog.json and examples/. `runtime` names what the page fetches at run time; those bytes are NOT in this repository.",
  "source": {
   "repo": "PeerInfinity/SWFRecomp-CC",
-  "commit": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
+  "commit": "344c85a166c327c48b0361a5ef7e68983e4f48aa",
   "trees": {
-   "SWFRecomp": "de89e9429186ea944f6423b5d76bbf89c058a2cc",
-   "SWFModernRuntime": "f0797b71387fe97783d4096a4422113a6303390f"
+   "SWFRecomp": "b3dd44aa327f8e063fa7dd1674366fc90e5299bb",
+   "SWFModernRuntime": "fcfb582df38fd94082bf6350b20120c1fe43ecc9"
   },
   "page": {
-   "commit": "c842bf0d33109eba165bc3b882fc5c56c8c627e2",
+   "commit": "344c85a166c327c48b0361a5ef7e68983e4f48aa",
    "tree": "697e00b28c9b63d4aef132e98fae0a81bbeddf95",
    "files": [
     "WALK_API.md",
@@ -28,15 +28,13 @@
    ]
   },
   "buildInputsUnchanged": {
-   "from": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
-   "to": "c842bf0d33109eba165bc3b882fc5c56c8c627e2",
+   "from": "344c85a166c327c48b0361a5ef7e68983e4f48aa",
+   "to": "344c85a166c327c48b0361a5ef7e68983e4f48aa",
    "paths": [
     "SWFRecomp",
     "SWFModernRuntime"
    ],
-   "diff": [
-    "SWFRecomp/assets/NotoSans-OFL.txt"
-   ],
+   "diff": [],
    "allowlist": [
     {
      "path": "SWFRecomp/assets/NotoSans-OFL.txt",
@@ -57,7 +55,7 @@
   "toolchain": {
    "emsdk": "5.0.0"
   },
-  "builtAt": "2026-10-14T18:42:26Z"
+  "builtAt": "2026-10-19T22:46:27Z"
  },
  "page": "recompiler/index.html",
  "walkApi": {
@@ -67,22 +65,22 @@
   "defaultChannel": "swfrecomp-walk"
  },
  "build": {
-  "commit": "4c450f076e8253c2e5fdc201a4b7cba2b51b6ad3",
+  "commit": "344c85a166c327c48b0361a5ef7e68983e4f48aa",
   "files": [
    {
     "path": "SWFRecomp.js",
-    "bytes": 78302,
-    "sha256": "cbeae3c963e06c5e6173ac16d73c14250c80e66bf69c3b33d74e96f6146fd1ca"
+    "bytes": 78486,
+    "sha256": "73f66c3c28be6f186f0fb5b0b5ae724a44750c1e7e9e4c9619ddd60cd8dbe5b0"
    },
    {
     "path": "SWFRecomp.wasm",
-    "bytes": 2335146,
-    "sha256": "1c0a8495defa6e5d00f5450c872861b264bacb368f9a7d3a7574b48921da468c"
+    "bytes": 2366214,
+    "sha256": "59176adee001eb17ec8378302475c11d7589c91e12988e50dc7c5877b197f6a2"
    },
    {
     "path": "build_info.json",
     "bytes": 102,
-    "sha256": "3e4728b1ec8fa3eb47cd7f1b7e670f75e3b75941c1ce922dc3459c321d308ad1"
+    "sha256": "cfb4d0f62a5eeeadd9983cef767c511bf7c754853bf82e91c51e7f94569155de"
    },
    {
     "path": "bundle/README.md",
@@ -96,8 +94,8 @@
    },
    {
     "path": "bundle/manifest.json",
-    "bytes": 10006,
-    "sha256": "7ba89993e9d68a7238658d3d75f649960331f91278bdc2ec6ace766304dfd597"
+    "bytes": 10255,
+    "sha256": "cd11fd5fed2bb62f22f85e8f9faebed7b37835fcfddc5351a3d112a331c58afc"
    },
    {
     "path": "bundle/runtime/display_bridge.c",
@@ -151,8 +149,8 @@
    },
    {
     "path": "bundle/runtime/include/actionmodern/object.h",
-    "bytes": 17314,
-    "sha256": "26aff0569e3d9d7ec5a096ed2c49b2378233cfedd25a0a0bf7d215f96d204dda"
+    "bytes": 17794,
+    "sha256": "9315af5c2999bf79b199de3add84b433fb2825b10017160d3c0111cdb38fee84"
    },
    {
     "path": "bundle/runtime/include/actionmodern/rando_ap.h",
@@ -176,8 +174,8 @@
    },
    {
     "path": "bundle/runtime/include/actionmodern/video_codec.h",
-    "bytes": 3950,
-    "sha256": "8374223471d786605673b03132444270944e871177bc45d5a5ffb1d2c5f54223"
+    "bytes": 5077,
+    "sha256": "2a83b8096d58816b02f6dced0c47886db7394e86d054d8edd72276e97e54447b"
    },
    {
     "path": "bundle/runtime/include/amf_packet.h",
@@ -196,8 +194,8 @@
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_abc.h",
-    "bytes": 32811,
-    "sha256": "07d16fb36ac6dfcb2b40f09a66c9cbc97a6fdd02bc58c98f05c18416803c4218"
+    "bytes": 32989,
+    "sha256": "2fd5056abfe1808b3c1aaf08f8510e0854883aa1ea88f03b2e4588611a117e13"
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_class.h",
@@ -206,8 +204,8 @@
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_cpu_raster.h",
-    "bytes": 5112,
-    "sha256": "6da5b3bd7c451e900a51ebc2032ffa6248a4b3c61c419994a295b03e1cc883f2"
+    "bytes": 5331,
+    "sha256": "1ff56fdb8015e50c59d6dda3759f518d82dfdd6215a71136fc225328cbabb371"
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_e4x.h",
@@ -218,6 +216,11 @@
     "path": "bundle/runtime/include/avm2/avm2_error.h",
     "bytes": 8705,
     "sha256": "4f759540a92edf7f0d61b9c6d302222dd919357d6ed11863432d646ebbfad4e4"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_external.h",
+    "bytes": 2692,
+    "sha256": "5a519508a7d7e235d4645a9d2c8c81eda91f32679b7df114c760d965ce40c8ba"
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_filters.h",
@@ -236,8 +239,13 @@
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_globals.h",
-    "bytes": 62053,
-    "sha256": "e707f50aa978fb7de32edaec7ce451a29d681080320c6e39a818f2e7590ccbdc"
+    "bytes": 62654,
+    "sha256": "2fafc07e3e7c55b7ac0715b760ef24a003d3c6c15b23fc53ac6e7b6c86493222"
+   },
+   {
+    "path": "bundle/runtime/include/avm2/avm2_jpegxr.h",
+    "bytes": 1978,
+    "sha256": "95dbd37b54f52ee362ef964c0d7afd20d7e6a049aba348dae6d67976861f61ad"
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_main.h",
@@ -256,8 +264,8 @@
    },
    {
     "path": "bundle/runtime/include/avm2/avm2_value.h",
-    "bytes": 5749,
-    "sha256": "d2006f751a4f4af8df7a0ca1138b1bc1a8911e2be0c0a0db916019a90a0d17a9"
+    "bytes": 7380,
+    "sha256": "e1c9e0b3c52b0a4838453c79ee66c749ea512c56cb09214fae782f70fc14f301"
    },
    {
     "path": "bundle/runtime/include/common.h",
@@ -283,6 +291,11 @@
     "path": "bundle/runtime/include/gradient_ramp.h",
     "bytes": 6457,
     "sha256": "b419cba9480dc9887970129b259a818cde49c624acd93a6cb01d27c694034200"
+   },
+   {
+    "path": "bundle/runtime/include/html_img.h",
+    "bytes": 6520,
+    "sha256": "5fa264d489c3d6ecb96c271587bdff9fdd890e2f749ac9bf764d9616f06a6bb9"
    },
    {
     "path": "bundle/runtime/include/libswf/capture.h",
@@ -311,8 +324,8 @@
    },
    {
     "path": "bundle/runtime/include/libswf/tag.h",
-    "bytes": 42373,
-    "sha256": "8e7958c54c9c5b02df4ac7bcdb55a631a78ad5e7ab6950d2dec2ace4b7d8590f"
+    "bytes": 43038,
+    "sha256": "bfe76b0a5b7883e24b2823a0b446076bd27538674edbab5ee87e5757e0dd0d88"
    },
    {
     "path": "bundle/runtime/include/memory/heap.h",
@@ -321,13 +334,13 @@
    },
    {
     "path": "bundle/runtime/include/rendering/render_webgpu.h",
-    "bytes": 30969,
-    "sha256": "a84f681cca469dab59f5223d759107ffc30918eb05ca7cac433fa38e6ac288f4"
+    "bytes": 31938,
+    "sha256": "8c26196e095c03d8ce378f65fc79e8cbd1bfe174d8b0144f63126bdeb4ef7faa"
    },
    {
     "path": "bundle/runtime/include/rendering/renderer.h",
-    "bytes": 9655,
-    "sha256": "b6c0c9fd4b22a613f600bd151f85c58550c814ee0391394bfaa21946a65836d0"
+    "bytes": 10146,
+    "sha256": "6e926cfcc41df423eb5746ea3a1f2725ca833200a0c0b39c5aef9b368444a9ef"
    },
    {
     "path": "bundle/runtime/include/socket_events.h",
@@ -376,13 +389,13 @@
    },
    {
     "path": "bundle/runtime/src/actionmodern/action.c",
-    "bytes": 3342018,
-    "sha256": "1af392e2aa68891fbd90acc3a2891e3020d977a48a0d16f451c9b5da2d7000aa"
+    "bytes": 3369318,
+    "sha256": "39f07a4830ba00e6d9a4f64f11abf9a73b4b79c28a42715c3c765de1250b6e5e"
    },
    {
     "path": "bundle/runtime/src/actionmodern/action_queue.c",
-    "bytes": 29539,
-    "sha256": "2db23edc94a66a333e32f047a9d5b6dd09d5632c35cbf38998de7d77c7a75c9e"
+    "bytes": 29931,
+    "sha256": "34ef87d98d32487d837c55450ce2f06d593a38d5595d4c636f9253b34f4a6ea6"
    },
    {
     "path": "bundle/runtime/src/actionmodern/avm1_amf.c",
@@ -406,8 +419,8 @@
    },
    {
     "path": "bundle/runtime/src/actionmodern/object.c",
-    "bytes": 74227,
-    "sha256": "5ed8523652294ad8e46c18fd23c6094971bde0dddff44545d608bc0e6d4a528d"
+    "bytes": 74280,
+    "sha256": "768d2deede4eb20ae10c61278b513b2f9cb741e2b926e42e2feb39ab8b14fb11"
    },
    {
     "path": "bundle/runtime/src/actionmodern/registered_class.c",
@@ -436,8 +449,8 @@
    },
    {
     "path": "bundle/runtime/src/actionmodern/video_codec.c",
-    "bytes": 25807,
-    "sha256": "967696b4f0d6f02c629e259ba7cd70b11d3547feefeaa483d4f6466f46456e74"
+    "bytes": 27644,
+    "sha256": "372260ff7d93987696048dd98d719d143e9140ea3ad58969c64c323a6e94798c"
    },
    {
     "path": "bundle/runtime/src/amf_packet.c",
@@ -451,8 +464,8 @@
    },
    {
     "path": "bundle/runtime/src/audio/audio_output_web.c",
-    "bytes": 3225,
-    "sha256": "fda08a8c77d6854084d16bac108f49dd2a89a5ecee16f5560e07b9fcf76281bf"
+    "bytes": 9254,
+    "sha256": "94c8222dd78eab2152526e76733f8119a7c431bf5de97a8eaa9cd08674fadb1f"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_amf.c",
@@ -461,13 +474,13 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_array.c",
-    "bytes": 41902,
-    "sha256": "e7b52ead6a2bdb7409a8ff52b8e51125dc08c81f409ffe65e5670446a039fec7"
+    "bytes": 41936,
+    "sha256": "94cb69777c691940ecdf00751649f74c67658d278f13ba3b2bf1b67b53636799"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_bitmap.c",
-    "bytes": 155224,
-    "sha256": "0ae00f9b3e644351ed25fa51232f4688b08736b4425a65f91234d14fd8514ead"
+    "bytes": 164269,
+    "sha256": "81f22977668b1416dc66f0013c684e86e0771e33241963303afd53d848d8457e"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_bytearray.c",
@@ -476,13 +489,13 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_class.c",
-    "bytes": 78877,
-    "sha256": "505109ac86dc0cb742e25907619cd523139f842d55218dc6195b697155f7160b"
+    "bytes": 79469,
+    "sha256": "5ff725e3cc20ddc0dc383df628fc0a4821d386719bba6d21b457931bd585e0dd"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_cpu_raster.c",
-    "bytes": 22014,
-    "sha256": "2f3013800d1d34187e92c3643022c003a64499d8ff4ee14605e13d82e88d82f8"
+    "bytes": 31125,
+    "sha256": "68b8bdd3bab3b45deaed3c9fe0153bdc26011aa225ef7e7325f7edb0915504d4"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_date.c",
@@ -496,8 +509,8 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_display.c",
-    "bytes": 801045,
-    "sha256": "76ce3b1758c4809f9adbd3046ebd18220a2e6ba88abe283eb2ab061998c1fef3"
+    "bytes": 823357,
+    "sha256": "4f0a97a92ec428a81b3e9455396bf7915ea5e7d1c7dbcf2eb96798c11413945d"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_e4x.c",
@@ -516,8 +529,8 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_external.c",
-    "bytes": 14323,
-    "sha256": "a17611a12b6df5dcc0693834e9183ae966d390c57bd9789934a1a07209e1e8f5"
+    "bytes": 22264,
+    "sha256": "afcd3bf6ccd2a5f586dafd6ea2a1734658f7932c7c53943e9df87181c895b7c2"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_filters.c",
@@ -536,13 +549,18 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_gc.c",
-    "bytes": 46032,
-    "sha256": "321bf298b711607efa41daba351eac13fefd9ce94f0c23a92293e4b7306cc191"
+    "bytes": 46848,
+    "sha256": "aa4213cd03ac6e090cd78622cfb7de7e0a0faaafd81e2eb9d782a28458fb9852"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_globals.c",
-    "bytes": 407732,
-    "sha256": "31418a1c3d1938a4d1d385dcaf35af1ea2b4f6af48d72bedfbb10b3a48d8892e"
+    "bytes": 418477,
+    "sha256": "5856295b0785022a0c8a0893e6c81975e7e6d22b49fce8791009f7538d3d390c"
+   },
+   {
+    "path": "bundle/runtime/src/avm2/avm2_jpegxr.c",
+    "bytes": 14042,
+    "sha256": "1ab743d2a01662513bdd6b109609cf1af084916dda54aa42c972e069455e4b31"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_json.c",
@@ -551,8 +569,8 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_main.c",
-    "bytes": 37668,
-    "sha256": "03eaabd5e284b79c691e105200c2226a26db31215428995d427126a2f9d55f4f"
+    "bytes": 38013,
+    "sha256": "1305e15ad667b805e98f74b073ada77da528625e4f4cd1851889518930ffeeba"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_media.c",
@@ -566,8 +584,8 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_net.c",
-    "bytes": 109829,
-    "sha256": "1d9e8cb520dfbc938a8b113e0e775280f9ee6c284a52840b9806954c1fb4e595"
+    "bytes": 117485,
+    "sha256": "4214c82ef172dcd8d80ba890ddc9ff1df13acf9ed79042f7c5311214fb75b38e"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_nsqname.c",
@@ -601,13 +619,13 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_regexp.c",
-    "bytes": 39798,
-    "sha256": "84ef65edc1cd47ae051fcaa58c80bbf92164fabeec2d545ffe83910177334355"
+    "bytes": 40186,
+    "sha256": "52cc6125f07a14f2e90e8057237ef629e59d03ed6260894d2d313d7202c45020"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_stage3d.c",
-    "bytes": 186869,
-    "sha256": "44930d9aa18b5dead7b10d80e200e6c942c123f6d936f67a098dc66f67497f9c"
+    "bytes": 189932,
+    "sha256": "80853b1655c5734fc34ce95e42a51d88257481a099291c03baf0fab1bca97941"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_string.c",
@@ -616,13 +634,13 @@
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_text.c",
-    "bytes": 382028,
-    "sha256": "9990fd02a22ac5fc5a9e229ff4265975fb4602c4e0c20c46c0e85c9ed005996c"
+    "bytes": 386739,
+    "sha256": "790ae14bc1b1bf5d33f4fee7cf76d68d89f7145e1490acd431daee9bc88ba9c5"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_value.c",
-    "bytes": 38061,
-    "sha256": "27bc74189ab6165f0244abf6fccc2632439bc9e0d1623828b9258e9d21534a06"
+    "bytes": 41605,
+    "sha256": "5b50097e84b6095d31a0b73300615f85e360f1784c2d1d500fa62f2c3ff8611c"
    },
    {
     "path": "bundle/runtime/src/avm2/avm2_vector.c",
@@ -646,8 +664,8 @@
    },
    {
     "path": "bundle/runtime/src/libswf/ng_shared.c",
-    "bytes": 99959,
-    "sha256": "08b478480f1338bf3bfc2acdaf73fde074f65e71d10bd9e38580376a0a77cd97"
+    "bytes": 105912,
+    "sha256": "64a6242ccacb48a837c8b96ec75737a497fe0e029bcef33d8d2cdc2cd19c311a"
    },
    {
     "path": "bundle/runtime/src/libswf/shape_hit_test.c",
@@ -666,8 +684,8 @@
    },
    {
     "path": "bundle/runtime/src/libswf/tag.c",
-    "bytes": 615949,
-    "sha256": "ec1dbc74db25851f289eb92dac7e646378d1eefa8ea627093b62e91c8fa178d3"
+    "bytes": 622555,
+    "sha256": "b3e2e980662093df9afb46c1eb0fef578abc3a5c79ea865cd680e99f90ca2b82"
    },
    {
     "path": "bundle/runtime/src/libswf/tag_stubs.c",
@@ -681,8 +699,8 @@
    },
    {
     "path": "bundle/runtime/src/rendering/render_webgpu.c",
-    "bytes": 281125,
-    "sha256": "8555dcb546ca38312327286d8e79e964cf5af76c8892e8bb004ff70433729e03"
+    "bytes": 293377,
+    "sha256": "8ef21d3eaec56bf61ec6e79c0b83ce05358f00b9dbe81fede2cc74f7d9a1090e"
    },
    {
     "path": "bundle/runtime/src/utils.c",
@@ -842,12 +860,12 @@
    {
     "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
     "bytes": 2887,
-    "sha256": "2a98d646089f3a72f25480116297c5fdb5b28fd9f815447273951f4ade4a115e"
+    "sha256": "9180e627a21f67074de08df68568b630f193b15bbc1929d56c87eafedd62b1b6"
    },
    {
     "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp.c",
-    "bytes": 113209,
-    "sha256": "fdfcf86167029ab2c39c35730d4ae6875b7bbeb9406a0fcc886de4e9b1f5e2ac"
+    "bytes": 114630,
+    "sha256": "38a0dbf2ee5ddd76c48f199cf1729b81ff8a9d66f5929109aca404c840571cc4"
    },
    {
     "path": "bundle/runtime/third_party/quickjs-libregexp/libregexp.h",
@@ -881,23 +899,23 @@
    },
    {
     "path": "host/graphics_host.js",
-    "bytes": 271385,
-    "sha256": "031e8b1f7897657b271236d37461200fb2c2b1b7a060e1220baf511a99dc9605"
+    "bytes": 276523,
+    "sha256": "3eecfb861ab1f6026adf4230b99e74776cae537a0a399103d3de4b759b1f3041"
    },
    {
     "path": "host/graphics_host.wasm",
-    "bytes": 1630820,
-    "sha256": "ca760506ce414c6cccfebf4402591bec6b95dc3394681457bf65404636a9d642"
+    "bytes": 1626984,
+    "sha256": "9b922b3f51ac18d59cf94bdd0ec723b1b27f1d5d5cd204031e56e285d15731af"
    },
    {
     "path": "host/graphics_host_avm2.js",
-    "bytes": 359171,
-    "sha256": "f7ffcbdb228898fc6f6ac7dd4ad97cd56cc0f7b3a0433d09b59376c27d3a10dd"
+    "bytes": 365949,
+    "sha256": "2edea553794beaa338558697bf78df30113ef24588c8e1fd59abb0416243fbe5"
    },
    {
     "path": "host/graphics_host_avm2.wasm",
-    "bytes": 3234778,
-    "sha256": "43c5ae54a4895c671cb5acfd91c0ee93a3de90102ced3657706a339b70f84d83"
+    "bytes": 3262180,
+    "sha256": "0d576e1dd3095d985de94216107ca43f43f630d9e7ddd167c405d7b4895d106f"
    },
    {
     "path": "host/guest_main_graphics.c",
@@ -910,11 +928,7 @@
     "sha256": "a2eeeb951025cd23b4c1015c5a3d1ec2892d3221b2d8f79fb75ff7595853525c"
    }
   ],
-  "sameAsPreviousRelease": {
-   "equal": true,
-   "files": 168,
-   "basis": "the previous release's committed blobs at 016d2b8d69d4988eaa699a0733d57b8dd50a40fd (md5-checked against its release.json)"
-  }
+  "sameAsPreviousRelease": null
  },
  "runtime": {
   "requires": "Chrome/Chromium 137+ (WebAssembly JSPI), WebGPU, SharedArrayBuffer (cross-origin isolation via recompiler/coi-serviceworker.js; in an iframe, via its Document-Isolation-Policy where the browser honours it)",
@@ -949,6 +963,12 @@
   ]
  },
  "files": [
+  {
+   "path": ".git",
+   "bytes": 78,
+   "md5": "c5667d34d425202d7933175359872168",
+   "sha256": "4a7e9e037d0df8641dc953db0b4c0bfb491cd5bb2bd353603443f0934d26f4ff"
+  },
   {
    "path": ".nojekyll",
    "bytes": 0,
@@ -1077,15 +1097,15 @@
   },
   {
    "path": "recompiler/SWFRecomp.js",
-   "bytes": 78302,
-   "md5": "2a21fee453b7f421c9b1a4cc403adc6d",
-   "sha256": "cbeae3c963e06c5e6173ac16d73c14250c80e66bf69c3b33d74e96f6146fd1ca"
+   "bytes": 78486,
+   "md5": "8d363d688d881e8a288ab16bd8138647",
+   "sha256": "73f66c3c28be6f186f0fb5b0b5ae724a44750c1e7e9e4c9619ddd60cd8dbe5b0"
   },
   {
    "path": "recompiler/SWFRecomp.wasm",
-   "bytes": 2335146,
-   "md5": "248344391b11ac9cdd10bb668efcafd0",
-   "sha256": "1c0a8495defa6e5d00f5450c872861b264bacb368f9a7d3a7574b48921da468c"
+   "bytes": 2366214,
+   "md5": "a61dc805010cf7f78857a6df26967783",
+   "sha256": "59176adee001eb17ec8378302475c11d7589c91e12988e50dc7c5877b197f6a2"
   },
   {
    "path": "recompiler/WALK_API.md",
@@ -1096,8 +1116,8 @@
   {
    "path": "recompiler/build_info.json",
    "bytes": 102,
-   "md5": "8c2719e5bf8bf251c03db536a5861187",
-   "sha256": "3e4728b1ec8fa3eb47cd7f1b7e670f75e3b75941c1ce922dc3459c321d308ad1"
+   "md5": "77830958301d5b89826494dab753caef",
+   "sha256": "cfb4d0f62a5eeeadd9983cef767c511bf7c754853bf82e91c51e7f94569155de"
   },
   {
    "path": "recompiler/coi-serviceworker.js",
@@ -1155,9 +1175,9 @@
   },
   {
    "path": "recompiler/bundle/manifest.json",
-   "bytes": 10006,
-   "md5": "3796f4e216d2b2db8854e89056cf6199",
-   "sha256": "7ba89993e9d68a7238658d3d75f649960331f91278bdc2ec6ace766304dfd597"
+   "bytes": 10255,
+   "md5": "96926f65cd5488e775c49b6d3911ecb7",
+   "sha256": "cd11fd5fed2bb62f22f85e8f9faebed7b37835fcfddc5351a3d112a331c58afc"
   },
   {
    "path": "recompiler/bundle/runtime/display_bridge.c",
@@ -1212,6 +1232,12 @@
    "bytes": 6457,
    "md5": "0fc39ce52700d15d65b745b0fa99925a",
    "sha256": "b419cba9480dc9887970129b259a818cde49c624acd93a6cb01d27c694034200"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/html_img.h",
+   "bytes": 6520,
+   "md5": "d4691f094996035549dd3e7334fdcffe",
+   "sha256": "5fa264d489c3d6ecb96c271587bdff9fdd890e2f749ac9bf764d9616f06a6bb9"
   },
   {
    "path": "recompiler/bundle/runtime/include/socket_events.h",
@@ -1281,9 +1307,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/object.h",
-   "bytes": 17314,
-   "md5": "803493444832029cb6d2314c212174e1",
-   "sha256": "26aff0569e3d9d7ec5a096ed2c49b2378233cfedd25a0a0bf7d215f96d204dda"
+   "bytes": 17794,
+   "md5": "1042e934beaf3dc88706c67aed1e75b0",
+   "sha256": "9315af5c2999bf79b199de3add84b433fb2825b10017160d3c0111cdb38fee84"
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/rando_ap.h",
@@ -1311,9 +1337,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/actionmodern/video_codec.h",
-   "bytes": 3950,
-   "md5": "c5e10e89633b5be83783bc9f1ba11e19",
-   "sha256": "8374223471d786605673b03132444270944e871177bc45d5a5ffb1d2c5f54223"
+   "bytes": 5077,
+   "md5": "8fd055fdab4fe0d15d4d682635c0185f",
+   "sha256": "2a83b8096d58816b02f6dced0c47886db7394e86d054d8edd72276e97e54447b"
   },
   {
    "path": "recompiler/bundle/runtime/include/audio/audio.h",
@@ -1329,9 +1355,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_abc.h",
-   "bytes": 32811,
-   "md5": "39fc81343f9b71533f54caadad81594c",
-   "sha256": "07d16fb36ac6dfcb2b40f09a66c9cbc97a6fdd02bc58c98f05c18416803c4218"
+   "bytes": 32989,
+   "md5": "9f34757b23bf1f5a25dc02799b993b84",
+   "sha256": "2fd5056abfe1808b3c1aaf08f8510e0854883aa1ea88f03b2e4588611a117e13"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_class.h",
@@ -1341,9 +1367,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_cpu_raster.h",
-   "bytes": 5112,
-   "md5": "524ce9334952e1a6b6f12067373c3b8d",
-   "sha256": "6da5b3bd7c451e900a51ebc2032ffa6248a4b3c61c419994a295b03e1cc883f2"
+   "bytes": 5331,
+   "md5": "4d098dcc3770d76bb3b14905782ccd47",
+   "sha256": "1ff56fdb8015e50c59d6dda3759f518d82dfdd6215a71136fc225328cbabb371"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_e4x.h",
@@ -1356,6 +1382,12 @@
    "bytes": 8705,
    "md5": "e3aa1ca1f8a08c240b8d5c2bb08e453b",
    "sha256": "4f759540a92edf7f0d61b9c6d302222dd919357d6ed11863432d646ebbfad4e4"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_external.h",
+   "bytes": 2692,
+   "md5": "1cf8bea9838825424df5fe1faf11d564",
+   "sha256": "5a519508a7d7e235d4645a9d2c8c81eda91f32679b7df114c760d965ce40c8ba"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_filters.h",
@@ -1377,9 +1409,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_globals.h",
-   "bytes": 62053,
-   "md5": "0214e3571b96e53cdf6789d77ffa7092",
-   "sha256": "e707f50aa978fb7de32edaec7ce451a29d681080320c6e39a818f2e7590ccbdc"
+   "bytes": 62654,
+   "md5": "1627eee1d227c2d80ed1ad155c7a9b4d",
+   "sha256": "2fafc07e3e7c55b7ac0715b760ef24a003d3c6c15b23fc53ac6e7b6c86493222"
+  },
+  {
+   "path": "recompiler/bundle/runtime/include/avm2/avm2_jpegxr.h",
+   "bytes": 1978,
+   "md5": "7aa2ec0cf08664a6627260aaf127ed46",
+   "sha256": "95dbd37b54f52ee362ef964c0d7afd20d7e6a049aba348dae6d67976861f61ad"
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_main.h",
@@ -1401,9 +1439,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/avm2/avm2_value.h",
-   "bytes": 5749,
-   "md5": "bd8cc2d1cbe547ddee88400239ab37d9",
-   "sha256": "d2006f751a4f4af8df7a0ca1138b1bc1a8911e2be0c0a0db916019a90a0d17a9"
+   "bytes": 7380,
+   "md5": "e703b000419f18a2b23ca359e3058bc7",
+   "sha256": "e1c9e0b3c52b0a4838453c79ee66c749ea512c56cb09214fae782f70fc14f301"
   },
   {
    "path": "recompiler/bundle/runtime/include/flashbang/flashbang.h",
@@ -1443,9 +1481,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/libswf/tag.h",
-   "bytes": 42373,
-   "md5": "1e0f70f6e603023c7c816dd3b33b2777",
-   "sha256": "8e7958c54c9c5b02df4ac7bcdb55a631a78ad5e7ab6950d2dec2ace4b7d8590f"
+   "bytes": 43038,
+   "md5": "86b8439be4bfa146d73ef65fcdb1ab33",
+   "sha256": "bfe76b0a5b7883e24b2823a0b446076bd27538674edbab5ee87e5757e0dd0d88"
   },
   {
    "path": "recompiler/bundle/runtime/include/memory/heap.h",
@@ -1455,15 +1493,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/include/rendering/render_webgpu.h",
-   "bytes": 30969,
-   "md5": "408e515c23df6213d1a0762cfd041e92",
-   "sha256": "a84f681cca469dab59f5223d759107ffc30918eb05ca7cac433fa38e6ac288f4"
+   "bytes": 31938,
+   "md5": "42a9ff8f77eca3e820bfcc28085f535f",
+   "sha256": "8c26196e095c03d8ce378f65fc79e8cbd1bfe174d8b0144f63126bdeb4ef7faa"
   },
   {
    "path": "recompiler/bundle/runtime/include/rendering/renderer.h",
-   "bytes": 9655,
-   "md5": "210bef5e5a0ed963f33ef04e513545fa",
-   "sha256": "b6c0c9fd4b22a613f600bd151f85c58550c814ee0391394bfaa21946a65836d0"
+   "bytes": 10146,
+   "md5": "3c096c2a498183f94e51a5cd6b2eb629",
+   "sha256": "6e926cfcc41df423eb5746ea3a1f2725ca833200a0c0b39c5aef9b368444a9ef"
   },
   {
    "path": "recompiler/bundle/runtime/lib/c-hashmap/map.c",
@@ -1509,15 +1547,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/action.c",
-   "bytes": 3342018,
-   "md5": "b77861b2036cbb60c5fabea936def74a",
-   "sha256": "1af392e2aa68891fbd90acc3a2891e3020d977a48a0d16f451c9b5da2d7000aa"
+   "bytes": 3369318,
+   "md5": "a9e7a09e46d9e9bd8784a98ee40933aa",
+   "sha256": "39f07a4830ba00e6d9a4f64f11abf9a73b4b79c28a42715c3c765de1250b6e5e"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/action_queue.c",
-   "bytes": 29539,
-   "md5": "af8f52609355c4bb60aadc8b424f27fa",
-   "sha256": "2db23edc94a66a333e32f047a9d5b6dd09d5632c35cbf38998de7d77c7a75c9e"
+   "bytes": 29931,
+   "md5": "a0064affea3fda7523632ed8a9dbe7d2",
+   "sha256": "34ef87d98d32487d837c55450ce2f06d593a38d5595d4c636f9253b34f4a6ea6"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/avm1_amf.c",
@@ -1545,9 +1583,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/object.c",
-   "bytes": 74227,
-   "md5": "f8fdb1453a7a114aec0e15a9c5cb5d38",
-   "sha256": "5ed8523652294ad8e46c18fd23c6094971bde0dddff44545d608bc0e6d4a528d"
+   "bytes": 74280,
+   "md5": "d2adba817888af356e4020da98fbfe16",
+   "sha256": "768d2deede4eb20ae10c61278b513b2f9cb741e2b926e42e2feb39ab8b14fb11"
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/registered_class.c",
@@ -1581,9 +1619,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/actionmodern/video_codec.c",
-   "bytes": 25807,
-   "md5": "5ead82d8e055f9f28467b839ad6f6faa",
-   "sha256": "967696b4f0d6f02c629e259ba7cd70b11d3547feefeaa483d4f6466f46456e74"
+   "bytes": 27644,
+   "md5": "347a38dc8d3d85a0f49e44decb2b4f3d",
+   "sha256": "372260ff7d93987696048dd98d719d143e9140ea3ad58969c64c323a6e94798c"
   },
   {
    "path": "recompiler/bundle/runtime/src/audio/audio.c",
@@ -1593,9 +1631,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/audio/audio_output_web.c",
-   "bytes": 3225,
-   "md5": "14bf9cf0fdf3b65334485caf69d832a5",
-   "sha256": "fda08a8c77d6854084d16bac108f49dd2a89a5ecee16f5560e07b9fcf76281bf"
+   "bytes": 9254,
+   "md5": "a0a27ac12ca57d86d295947f4ea3373d",
+   "sha256": "94c8222dd78eab2152526e76733f8119a7c431bf5de97a8eaa9cd08674fadb1f"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_amf.c",
@@ -1605,15 +1643,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_array.c",
-   "bytes": 41902,
-   "md5": "7ea799c9034842135049e1b65216f356",
-   "sha256": "e7b52ead6a2bdb7409a8ff52b8e51125dc08c81f409ffe65e5670446a039fec7"
+   "bytes": 41936,
+   "md5": "2cf55dcdb575904128cdb04021b8a8d0",
+   "sha256": "94cb69777c691940ecdf00751649f74c67658d278f13ba3b2bf1b67b53636799"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_bitmap.c",
-   "bytes": 155224,
-   "md5": "48c2e21a7b1e2f35f5e299e2ba4ac8e2",
-   "sha256": "0ae00f9b3e644351ed25fa51232f4688b08736b4425a65f91234d14fd8514ead"
+   "bytes": 164269,
+   "md5": "692ce23e2703297d6282e7381089fc1b",
+   "sha256": "81f22977668b1416dc66f0013c684e86e0771e33241963303afd53d848d8457e"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_bytearray.c",
@@ -1623,15 +1661,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_class.c",
-   "bytes": 78877,
-   "md5": "c304dd633ab5d5ab220a7353c1338338",
-   "sha256": "505109ac86dc0cb742e25907619cd523139f842d55218dc6195b697155f7160b"
+   "bytes": 79469,
+   "md5": "2dc4bec73c94a4bd2c7e96e9e9a5cce0",
+   "sha256": "5ff725e3cc20ddc0dc383df628fc0a4821d386719bba6d21b457931bd585e0dd"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_cpu_raster.c",
-   "bytes": 22014,
-   "md5": "409cc333553a5e2142cf6cc36f01dda0",
-   "sha256": "2f3013800d1d34187e92c3643022c003a64499d8ff4ee14605e13d82e88d82f8"
+   "bytes": 31125,
+   "md5": "809517b9c17386cacb2a571e78e94e44",
+   "sha256": "68b8bdd3bab3b45deaed3c9fe0153bdc26011aa225ef7e7325f7edb0915504d4"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_date.c",
@@ -1647,9 +1685,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_display.c",
-   "bytes": 801045,
-   "md5": "1ca5242e2eafeb4c3f51941afb6d7583",
-   "sha256": "76ce3b1758c4809f9adbd3046ebd18220a2e6ba88abe283eb2ab061998c1fef3"
+   "bytes": 823357,
+   "md5": "191b3a1ef953635cc4602b6d54b4bd5c",
+   "sha256": "4f0a97a92ec428a81b3e9455396bf7915ea5e7d1c7dbcf2eb96798c11413945d"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_e4x.c",
@@ -1671,9 +1709,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_external.c",
-   "bytes": 14323,
-   "md5": "d0a0c13c4789c4fb211c65c5f2364384",
-   "sha256": "a17611a12b6df5dcc0693834e9183ae966d390c57bd9789934a1a07209e1e8f5"
+   "bytes": 22264,
+   "md5": "8530aedd234acaaad9d81d0052792338",
+   "sha256": "afcd3bf6ccd2a5f586dafd6ea2a1734658f7932c7c53943e9df87181c895b7c2"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_filters.c",
@@ -1695,15 +1733,21 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_gc.c",
-   "bytes": 46032,
-   "md5": "1ec7571846d45fccd6b1056e49648ac4",
-   "sha256": "321bf298b711607efa41daba351eac13fefd9ce94f0c23a92293e4b7306cc191"
+   "bytes": 46848,
+   "md5": "235325f1d1b2cf335cb97f82c731ab54",
+   "sha256": "aa4213cd03ac6e090cd78622cfb7de7e0a0faaafd81e2eb9d782a28458fb9852"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_globals.c",
-   "bytes": 407732,
-   "md5": "664ffcccb54bc0340b0ba1f14c6a463b",
-   "sha256": "31418a1c3d1938a4d1d385dcaf35af1ea2b4f6af48d72bedfbb10b3a48d8892e"
+   "bytes": 418477,
+   "md5": "e411ac1dd0abd9e3abd7b819cfec7b7b",
+   "sha256": "5856295b0785022a0c8a0893e6c81975e7e6d22b49fce8791009f7538d3d390c"
+  },
+  {
+   "path": "recompiler/bundle/runtime/src/avm2/avm2_jpegxr.c",
+   "bytes": 14042,
+   "md5": "eb30ab505a249bf4c89ee240ad2a0132",
+   "sha256": "1ab743d2a01662513bdd6b109609cf1af084916dda54aa42c972e069455e4b31"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_json.c",
@@ -1713,9 +1757,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_main.c",
-   "bytes": 37668,
-   "md5": "5005a4333a71284bdaecbbea4756028b",
-   "sha256": "03eaabd5e284b79c691e105200c2226a26db31215428995d427126a2f9d55f4f"
+   "bytes": 38013,
+   "md5": "e5e63eb941afcc3d853049e6925bcf17",
+   "sha256": "1305e15ad667b805e98f74b073ada77da528625e4f4cd1851889518930ffeeba"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_media.c",
@@ -1731,9 +1775,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_net.c",
-   "bytes": 109829,
-   "md5": "d0fb275856179d9cb687d214f8bf3a4a",
-   "sha256": "1d9e8cb520dfbc938a8b113e0e775280f9ee6c284a52840b9806954c1fb4e595"
+   "bytes": 117485,
+   "md5": "e426f864b76fcc18d497ad3f3985976a",
+   "sha256": "4214c82ef172dcd8d80ba890ddc9ff1df13acf9ed79042f7c5311214fb75b38e"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_nsqname.c",
@@ -1773,15 +1817,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_regexp.c",
-   "bytes": 39798,
-   "md5": "1cfcd87dfec584e85d0a7fdf828d6ca5",
-   "sha256": "84ef65edc1cd47ae051fcaa58c80bbf92164fabeec2d545ffe83910177334355"
+   "bytes": 40186,
+   "md5": "d028ea780f135379e5238049b0ff8d31",
+   "sha256": "52cc6125f07a14f2e90e8057237ef629e59d03ed6260894d2d313d7202c45020"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_stage3d.c",
-   "bytes": 186869,
-   "md5": "6574d2220b032cead278394ac839c1b4",
-   "sha256": "44930d9aa18b5dead7b10d80e200e6c942c123f6d936f67a098dc66f67497f9c"
+   "bytes": 189932,
+   "md5": "6d4cefe44f7aa55a1a6a5975f04fad43",
+   "sha256": "80853b1655c5734fc34ce95e42a51d88257481a099291c03baf0fab1bca97941"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_string.c",
@@ -1791,15 +1835,15 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_text.c",
-   "bytes": 382028,
-   "md5": "54a5843a136af6255debffa656974207",
-   "sha256": "9990fd02a22ac5fc5a9e229ff4265975fb4602c4e0c20c46c0e85c9ed005996c"
+   "bytes": 386739,
+   "md5": "2c001a1d706daaf07f3211683cfa980b",
+   "sha256": "790ae14bc1b1bf5d33f4fee7cf76d68d89f7145e1490acd431daee9bc88ba9c5"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_value.c",
-   "bytes": 38061,
-   "md5": "4981b4eabdc701a30b2797b7880d22cd",
-   "sha256": "27bc74189ab6165f0244abf6fccc2632439bc9e0d1623828b9258e9d21534a06"
+   "bytes": 41605,
+   "md5": "6643b0f36a36d061428cf8b4de01826e",
+   "sha256": "5b50097e84b6095d31a0b73300615f85e360f1784c2d1d500fa62f2c3ff8611c"
   },
   {
    "path": "recompiler/bundle/runtime/src/avm2/avm2_vector.c",
@@ -1827,9 +1871,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/ng_shared.c",
-   "bytes": 99959,
-   "md5": "72d70cfb5ef89dad19e37de32d8bcdd6",
-   "sha256": "08b478480f1338bf3bfc2acdaf73fde074f65e71d10bd9e38580376a0a77cd97"
+   "bytes": 105912,
+   "md5": "e80088a0c96ec998865d5fd822847c8d",
+   "sha256": "64a6242ccacb48a837c8b96ec75737a497fe0e029bcef33d8d2cdc2cd19c311a"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/shape_hit_test.c",
@@ -1851,9 +1895,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/tag.c",
-   "bytes": 615949,
-   "md5": "a59c1e136c9c6df14346891ac22ecef0",
-   "sha256": "ec1dbc74db25851f289eb92dac7e646378d1eefa8ea627093b62e91c8fa178d3"
+   "bytes": 622555,
+   "md5": "0321285a99d0b64594d586263009ba50",
+   "sha256": "b3e2e980662093df9afb46c1eb0fef578abc3a5c79ea865cd680e99f90ca2b82"
   },
   {
    "path": "recompiler/bundle/runtime/src/libswf/tag_stubs.c",
@@ -1869,9 +1913,9 @@
   },
   {
    "path": "recompiler/bundle/runtime/src/rendering/render_webgpu.c",
-   "bytes": 281125,
-   "md5": "e86f8e9fdd1f7c42bd4ad8803f5f587b",
-   "sha256": "8555dcb546ca38312327286d8e79e964cf5af76c8892e8bb004ff70433729e03"
+   "bytes": 293377,
+   "md5": "266ebe38d17905139eb6cc5d184daf83",
+   "sha256": "8ef21d3eaec56bf61ec6e79c0b83ce05358f00b9dbe81fede2cc74f7d9a1090e"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/libtess2/bucketalloc.c",
@@ -2050,14 +2094,14 @@
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp-opcode.h",
    "bytes": 2887,
-   "md5": "761f050100c9569341f605d694214711",
-   "sha256": "2a98d646089f3a72f25480116297c5fdb5b28fd9f815447273951f4ade4a115e"
+   "md5": "7284d5c2ab266a6e2b2622d60558bfa7",
+   "sha256": "9180e627a21f67074de08df68568b630f193b15bbc1929d56c87eafedd62b1b6"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.c",
-   "bytes": 113209,
-   "md5": "80cdd505a2f5ebdbf26ac0f632f22184",
-   "sha256": "fdfcf86167029ab2c39c35730d4ae6875b7bbeb9406a0fcc886de4e9b1f5e2ac"
+   "bytes": 114630,
+   "md5": "309dbbaf5ec66b487553a6e4598cb94b",
+   "sha256": "38a0dbf2ee5ddd76c48f199cf1729b81ff8a9d66f5929109aca404c840571cc4"
   },
   {
    "path": "recompiler/bundle/runtime/third_party/quickjs-libregexp/libregexp.h",
@@ -2097,27 +2141,27 @@
   },
   {
    "path": "recompiler/host/graphics_host.js",
-   "bytes": 271385,
-   "md5": "cbdfa6210c459f8059110c3f88ae5b47",
-   "sha256": "031e8b1f7897657b271236d37461200fb2c2b1b7a060e1220baf511a99dc9605"
+   "bytes": 276523,
+   "md5": "0ad46e46f7ca3797df2a71dfe8c96559",
+   "sha256": "3eecfb861ab1f6026adf4230b99e74776cae537a0a399103d3de4b759b1f3041"
   },
   {
    "path": "recompiler/host/graphics_host.wasm",
-   "bytes": 1630820,
-   "md5": "245e0191f1b0782899963b83a8c9ca2b",
-   "sha256": "ca760506ce414c6cccfebf4402591bec6b95dc3394681457bf65404636a9d642"
+   "bytes": 1626984,
+   "md5": "8c07fe9e31b29f0022f9d1f101874565",
+   "sha256": "9b922b3f51ac18d59cf94bdd0ec723b1b27f1d5d5cd204031e56e285d15731af"
   },
   {
    "path": "recompiler/host/graphics_host_avm2.js",
-   "bytes": 359171,
-   "md5": "5d0424655762d71aaf290ec3cd933e1b",
-   "sha256": "f7ffcbdb228898fc6f6ac7dd4ad97cd56cc0f7b3a0433d09b59376c27d3a10dd"
+   "bytes": 365949,
+   "md5": "add73cd332d7e48430cf134fd4949d05",
+   "sha256": "2edea553794beaa338558697bf78df30113ef24588c8e1fd59abb0416243fbe5"
   },
   {
    "path": "recompiler/host/graphics_host_avm2.wasm",
-   "bytes": 3234778,
-   "md5": "38a2b416b65b5fd4ce09bbede199b6a3",
-   "sha256": "43c5ae54a4895c671cb5acfd91c0ee93a3de90102ced3657706a339b70f84d83"
+   "bytes": 3262180,
+   "md5": "e5d2679701d666e8f9bf15c3681c3dd6",
+   "sha256": "0d576e1dd3095d985de94216107ca43f43f630d9e7ddd167c405d7b4895d106f"
   },
   {
    "path": "recompiler/host/guest_main_graphics.c",
@@ -2168,5 +2212,5 @@
    "sha256": "e6a68badcff806ed82bcd8de033058fda6835583c51a115c2d9213839791d61b"
   }
  ],
- "totalBytes": 24338493
+ "totalBytes": 24579293
 }

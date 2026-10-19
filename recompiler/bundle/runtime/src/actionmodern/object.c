@@ -1588,6 +1588,8 @@ ASArray* allocArray(SWFAppContext* app_context, u32 initial_capacity)
 	arr->mt_kind = MT_KIND_PLAIN;
 	arr->mt_pending = 0;
 	arr->mt_pending_idx = 0;
+	arr->virt_ctor = NULL;
+	arr->no_proto_fallback = 0;
 	mtLinkArray(arr);
 
 #ifdef DEBUG

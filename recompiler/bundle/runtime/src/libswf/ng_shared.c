@@ -678,6 +678,142 @@ u16 ng_findFontIdByName(const char* name)
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Embedded-font name registry (Flash's TextFormat.font → embedded font lookup)
+// ---------------------------------------------------------------------------
+// Flash resolves a TextFormat font name against two tables, both fed in SWF
+// tag order (fonts/embed_name_lookup derives every rule; Ruffle
+// library.rs get_embedded_font_by_name / FontMap):
+//   1. ExportAssets names. An export name wins over every other name, and an
+//      export of a NON-font hides the name entirely.
+//   2. Font names: a DefineFont2/3's own name and every DefineFontInfo/2 name
+//      for an already-defined font, keyed on (name, bold, italic) with the
+//      font's DefineFont2 style flags (DefineFontInfo's own flags are ignored);
+//      the first registration of a key wins. DefineFontName never registers.
+// The recompiler drops FontInfo / Export events whose character id is not yet
+// defined, which is what Flash does. Lookup is case-insensitive.
+#define MAX_FONT_NAMES_NG 256
+static struct { char name[128]; u16 font_id; u8 bold; u8 italic; } ng_font_names[MAX_FONT_NAMES_NG];
+static size_t ng_font_name_count = 0;
+#define MAX_FONT_EXPORTS_NG 256
+static struct { char name[128]; u16 char_id; u8 is_font; } ng_font_exports[MAX_FONT_EXPORTS_NG];
+static size_t ng_font_export_count = 0;
+
+static void ng_add_font_name(u16 font_id, const char* name, int bold, int italic)
+{
+	if (name == NULL || name[0] == '\0') return;
+	for (size_t i = 0; i < ng_font_name_count; i++) {
+		if (ng_font_names[i].bold == (u8)(bold != 0) && ng_font_names[i].italic == (u8)(italic != 0) &&
+		    strcasecmp(ng_font_names[i].name, name) == 0)
+			return; // first registration wins
+	}
+	if (ng_font_name_count >= MAX_FONT_NAMES_NG) return;
+	size_t s = ng_font_name_count++;
+	strncpy(ng_font_names[s].name, name, sizeof(ng_font_names[s].name) - 1);
+	ng_font_names[s].name[sizeof(ng_font_names[s].name) - 1] = '\0';
+	ng_font_names[s].font_id = font_id;
+	ng_font_names[s].bold = (u8)(bold != 0);
+	ng_font_names[s].italic = (u8)(italic != 0);
+}
+
+// Character ids defined by a DefineFont2/3 (independent of ng_fonts' capacity).
+static u8 ng_swf_font_bits[65536 / 8];
+
+// DefineFont2/3 (via tagDefineFontInfo): the font's own name.
+void ng_register_swf_font(u16 font_id, const char* name, int bold, int italic)
+{
+	ng_swf_font_bits[font_id >> 3] |= (u8)(1u << (font_id & 7));
+	ng_add_font_name(font_id, name, bold, italic);
+}
+
+// DefineFontInfo / DefineFontInfo2: an additional name for an already-defined
+// font, registered with the font's DefineFont2 style (DefineFont v1 has none).
+void tagRegisterFontName(SWFAppContext* app_context, u16 font_id, const char* name)
+{
+	(void)app_context;
+	ng_add_font_name(font_id, name, ng_getFontBold(font_id), ng_getFontItalic(font_id));
+}
+
+// ExportAssets of an already-defined character: is_font says whether that
+// character is a font. Later exports of the same name replace earlier ones.
+void tagRegisterFontExport(SWFAppContext* app_context, const char* name, u16 char_id, int is_font)
+{
+	(void)app_context;
+	if (name == NULL || name[0] == '\0') return;
+	size_t s = ng_font_export_count;
+	for (size_t i = 0; i < ng_font_export_count; i++) {
+		if (strcasecmp(ng_font_exports[i].name, name) == 0) { s = i; break; }
+	}
+	if (s == ng_font_export_count) {
+		if (ng_font_export_count >= MAX_FONT_EXPORTS_NG) return;
+		ng_font_export_count++;
+	}
+	strncpy(ng_font_exports[s].name, name, sizeof(ng_font_exports[s].name) - 1);
+	ng_font_exports[s].name[sizeof(ng_font_exports[s].name) - 1] = '\0';
+	ng_font_exports[s].char_id = char_id;
+	ng_font_exports[s].is_font = (u8)(is_font != 0);
+}
+
+static int ng_font_name_get(const char* name, int bold, int italic, u16* out_id)
+{
+	for (size_t i = 0; i < ng_font_name_count; i++) {
+		if (ng_font_names[i].bold == (u8)bold && ng_font_names[i].italic == (u8)italic &&
+		    strcasecmp(ng_font_names[i].name, name) == 0) {
+			*out_id = ng_font_names[i].font_id;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// Resolve a TextFormat font name to an embedded font's character id.
+// Returns 1 and sets *out_id when found, 0 when the SWF embeds no such font.
+// Style fallback order is Ruffle's FontMap::find (tested by
+// fonts/embed_matching/fallback_preferences).
+int ng_findEmbeddedFontId(const char* name, int bold, int italic, u16* out_id)
+{
+	if (name == NULL || name[0] == '\0' || out_id == NULL) return 0;
+	bold = bold != 0; italic = italic != 0;
+	for (size_t i = 0; i < ng_font_export_count; i++) {
+		if (strcasecmp(ng_font_exports[i].name, name) == 0) {
+			if (!ng_font_exports[i].is_font) return 0;
+			*out_id = ng_font_exports[i].char_id;
+			return 1;
+		}
+	}
+	if (ng_font_name_get(name, bold, italic, out_id)) return 1;
+	if (bold ^ italic) {
+		if (ng_font_name_get(name, 1, 1, out_id)) return 1;
+		if (ng_font_name_get(name, 0, 0, out_id)) return 1;
+		if (ng_font_name_get(name, !bold, !italic, out_id)) return 1;
+	} else {
+		if (bold && italic && ng_font_name_get(name, 0, 0, out_id)) return 1;
+		if (ng_font_name_get(name, 1, 0, out_id)) return 1;
+		if (ng_font_name_get(name, 0, 1, out_id)) return 1;
+		if (!bold && !italic && ng_font_name_get(name, 1, 1, out_id)) return 1;
+	}
+	return 0;
+}
+
+// TextFormat font name → font id for the AVM1 TextField paths; 0 (the builtin
+// device font) when the SWF embeds no font of that name. The legacy
+// one-name-per-font scan is only consulted if the registry overflowed.
+u16 ng_resolveTextFormatFontId(const char* name, int bold, int italic)
+{
+	u16 id = 0;
+	if (ng_findEmbeddedFontId(name, bold, italic, &id)) return id;
+	if (ng_font_name_count >= MAX_FONT_NAMES_NG) return ng_findFontIdByName(name);
+	return 0;
+}
+
+// 1 when font_id names a font the SWF itself defined with DefineFont2/3, 0 for
+// the builtin device font (id 0), a DefineFont v1, or an id no DefineFont2/3
+// registered.
+int ng_isSwfEmbeddedFont(u16 font_id)
+{
+	return (ng_swf_font_bits[font_id >> 3] >> (font_id & 7)) & 1;
+}
+
 // A device-font EditText (UseOutlines/embedFonts = false) renders with a host
 // system font, never with the SWF's embedded outlines. Many SWFs embed a font
 // (e.g. "Arial") with only the glyph subset used by their static text, then

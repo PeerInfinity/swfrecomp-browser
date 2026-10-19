@@ -25,6 +25,11 @@
 
 #include "libregexp.h"
 
+// libregexp limits (libregexp.c CAPTURE_COUNT_MAX / REGISTER_COUNT_MAX).
+// Capture count includes group 0.
+#define RE_MAX_CAPTURES 1024
+#define RE_MAX_REGISTERS 255
+
 // libregexp embedder hooks. Plain libc realloc: regex bytecode and interp
 // state are short-lived and small; the o1heap allocator has no realloc.
 void* lre_realloc(void* opaque, void* ptr, size_t size)
@@ -556,13 +561,13 @@ static char* re_preprocess(Avm2Context* ctx, const Avm2String* src,
 	const char* s = src->utf8;
 	uint32_t len = src->len;
 	// Tamarin's PCRE has no capture ceiling; libregexp caps at
-	// CAPTURE_COUNT_MAX (255) and a pattern over it fails to compile, so it
+	// CAPTURE_COUNT_MAX (1024) and a pattern over it fails to compile, so it
 	// never matches at all. Such a pattern only needs its grouping unless
 	// something reads the groups back, so when there are no backreferences
 	// to renumber, demote plain `(` to `(?:`. Strictly monotone — the
 	// affected patterns match nothing today. (from_avmplus recursion/pcre_*)
 	int has_backref = 0;
-	int demote = (re_count_captures(s, len, &has_backref) >= 255) && !has_backref;
+	int demote = (re_count_captures(s, len, &has_backref) >= RE_MAX_CAPTURES) && !has_backref;
 	char* out = avm2_alloc(ctx, (demote ? len * 3 : len) + 1);
 	uint32_t n = 0;
 	int in_class = 0;
@@ -674,8 +679,6 @@ static int re_ensure_compiled(Avm2Context* ctx, Avm2RegExpExt* ext)
 // Matching
 // ---------------------------------------------------------------------------
 
-#define RE_MAX_CAPTURES 255
-
 typedef struct ReMatch
 {
 	uint32_t ngroups;  // capture count INCLUDING the whole match (index 0)
@@ -692,7 +695,11 @@ static int re_find(Avm2Context* ctx, Avm2RegExpExt* ext, const ReText* t,
 	if (start16 > t->n16) return 0;
 	int cc = lre_get_capture_count(ext->bytecode);
 	if (cc > RE_MAX_CAPTURES) cc = RE_MAX_CAPTURES;
-	uint8_t* capture[RE_MAX_CAPTURES * 2];
+	// lre_exec writes lre_get_alloc_count() slots: 2 per capture PLUS the
+	// loop-counter registers that follow them.
+	uint8_t* capture[RE_MAX_CAPTURES * 2 + RE_MAX_REGISTERS];
+	if (lre_get_alloc_count(ext->bytecode) > (int) (sizeof(capture) / sizeof(capture[0])))
+		return 0;
 	int r = lre_exec(capture, ext->bytecode, (const uint8_t*) t->units,
 	                 (int) start16, (int) t->n16, 1, ctx);
 	if (r != 1) return 0;

@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
+#include <stdlib.h>
 
 #include "avm2/avm2_cpu_raster.h"
 
@@ -258,10 +259,225 @@ static uint32_t grad_sample_ramp(const uint8_t* ramp, double t, int linear_out)
 	return (ai << 24) | (ri << 16) | (gi << 8) | bi;
 }
 
+// ---------------------------------------------------------------------------
+// 4x-sample anti-aliasing for BitmapData.draw().
+//
+// Flash anti-aliases a vector draw() even at stage quality LOW (the
+// from_shumway/acid/acid-bitmap-draw_quality_{high,low} goldens are
+// md5-identical, and Ruffle marks `_low` known_failure for exactly this).
+// Ruffle's draw() goes through its GPU pipeline at 4x MSAA, so this is a CPU
+// MSAA: each entry point (one shape / one Graphics fill or stroke path / one
+// morph) rasterises into a 4-sample plane covering its own bounding box,
+// seeded from the target, and resolves it back once. Coverage is decided per
+// sample at the standard Vulkan/D3D 4x positions (the same table the Stage3D
+// CPU rasteriser uses, avm2_stage3d.c S3D_SAMPLE_XY); shading stays at the
+// pixel centre, as a GPU does without sample-rate shading. Per-call planes keep
+// triangles of ONE shape seamless (no conflation across its own tessellation),
+// while separate shapes composite one after another, as Flash's do.
+// Off by default: only bd_draw turns it on, so the AVM2_CPU_DUMP frame path
+// and every other caller are byte-unchanged.
+// ---------------------------------------------------------------------------
+
+static int g_cpu_aa = 0;
+
+int avm2_cpu_raster_set_aa(int on)
+{
+	int prev = g_cpu_aa;
+	g_cpu_aa = on != 0;
+	return prev;
+}
+
+static const double CPU_AA_XY[4][2] = {
+	{ 0.375, 0.125 }, { 0.875, 0.375 },
+	{ 0.125, 0.625 }, { 0.625, 0.875 },
+};
+
+// The open sample plane: (sw x sh x 4) premultiplied samples whose (0,0) is
+// target pixel (sx_org, sy_org) of `buf`. raster_tri routes into it when its
+// target is `buf`.
+static struct {
+	uint32_t* samples;
+	uint32_t* buf;
+	int W, sx_org, sy_org, sw, sh;
+} g_aa_plane;
+
+// Open the sample plane for device-pixel bounds [x0,x1) x [y0,y1) (clamped to
+// the target). Leaves it closed (aliased path) when AA is off, the box is
+// empty, or the allocation fails.
+static void cpu_aa_begin(uint32_t* buf, int W, int H,
+                         double x0, double y0, double x1, double y1)
+{
+	g_aa_plane.samples = NULL;
+	if (!g_cpu_aa) return;
+	// Clamp in double first: a huge or non-finite transform must not reach an
+	// int conversion (NaN fails every comparison and is caught by the last test).
+	if (x0 < 0.0) x0 = 0.0;
+	if (y0 < 0.0) y0 = 0.0;
+	if (x1 > (double) W) x1 = (double) W;
+	if (y1 > (double) H) y1 = (double) H;
+	if (!(x1 > x0 && y1 > y0)) return;
+	int ix0 = (int) floor(x0), iy0 = (int) floor(y0);
+	int ix1 = (int) ceil(x1), iy1 = (int) ceil(y1);
+	if (ix1 <= ix0 || iy1 <= iy0) return;
+	int sw = ix1 - ix0, sh = iy1 - iy0;
+	uint32_t* p = (uint32_t*) malloc((size_t) sw * (size_t) sh * 4 * sizeof(uint32_t));
+	if (p == NULL) return;
+	for (int y = 0; y < sh; y++)
+	{
+		const uint32_t* row = buf + (size_t) (iy0 + y) * W + ix0;
+		uint32_t* srow = p + (size_t) y * sw * 4;
+		for (int x = 0; x < sw; x++)
+			srow[4 * x] = srow[4 * x + 1] = srow[4 * x + 2] = srow[4 * x + 3] = row[x];
+	}
+	g_aa_plane.samples = p;
+	g_aa_plane.buf = buf;
+	g_aa_plane.W = W;
+	g_aa_plane.sx_org = ix0;
+	g_aa_plane.sy_org = iy0;
+	g_aa_plane.sw = sw;
+	g_aa_plane.sh = sh;
+}
+
+// Resolve: per channel, the rounded mean of the 4 samples. A pixel no triangle
+// touched has 4 equal samples, so it is written back unchanged.
+static void cpu_aa_end(void)
+{
+	if (g_aa_plane.samples == NULL) return;
+	for (int y = 0; y < g_aa_plane.sh; y++)
+	{
+		uint32_t* row = g_aa_plane.buf + (size_t) (g_aa_plane.sy_org + y) * g_aa_plane.W
+		              + g_aa_plane.sx_org;
+		const uint32_t* srow = g_aa_plane.samples + (size_t) y * g_aa_plane.sw * 4;
+		for (int x = 0; x < g_aa_plane.sw; x++)
+		{
+			const uint32_t* q = srow + 4 * x;
+			if (q[0] == q[1] && q[0] == q[2] && q[0] == q[3])
+			{
+				row[x] = q[0];
+				continue;
+			}
+			uint32_t out = 0;
+			for (int sh = 0; sh < 32; sh += 8)
+			{
+				uint32_t sum = ((q[0] >> sh) & 0xFF) + ((q[1] >> sh) & 0xFF)
+				             + ((q[2] >> sh) & 0xFF) + ((q[3] >> sh) & 0xFF);
+				out |= ((sum + 2) >> 2) << sh;
+			}
+			row[x] = out;
+		}
+	}
+	free(g_aa_plane.samples);
+	g_aa_plane.samples = NULL;
+}
+
+static inline void cpu_aa_grow_pt(double b[4], double x, double y)
+{
+	if (x < b[0]) b[0] = x;
+	if (y < b[1]) b[1] = y;
+	if (x > b[2]) b[2] = x;
+	if (y > b[3]) b[3] = y;
+}
+
+// Edge ownership for a sample exactly ON an edge: the edge vector (in the
+// sign-normalised winding) decides, antisymmetrically, so of two triangles
+// sharing an edge exactly one covers the sample — no double blend of a
+// translucent fill along its own tessellation.
+static inline int cpu_aa_edge_owns(double ex, double ey)
+{
+	return ey > 0.0 || (ey == 0.0 && ex > 0.0);
+}
+
+static void raster_tri_aa(RasterCtx* R,
+                          double ax, double ay, double bx, double by,
+                          double cx, double cy)
+{
+	double tx_min = ax < bx ? ax : bx; if (cx < tx_min) tx_min = cx;
+	double tx_max = ax > bx ? ax : bx; if (cx > tx_max) tx_max = cx;
+	double ty_min = ay < by ? ay : by; if (cy < ty_min) ty_min = cy;
+	double ty_max = ay > by ? ay : by; if (cy > ty_max) ty_max = cy;
+	int ox = g_aa_plane.sx_org, oy = g_aa_plane.sy_org, sw = g_aa_plane.sw;
+	double pxmax = (double) (ox + sw - 1), pymax = (double) (oy + g_aa_plane.sh - 1);
+	tx_min = fmax(floor(tx_min) - 1.0, (double) ox);
+	ty_min = fmax(floor(ty_min) - 1.0, (double) oy);
+	tx_max = fmin(ceil(tx_max), pxmax);
+	ty_max = fmin(ceil(ty_max), pymax);
+	if (!(tx_max >= tx_min && ty_max >= ty_min)) return;
+	int xlo = (int) tx_min, xhi = (int) tx_max;
+	int ylo = (int) ty_min, yhi = (int) ty_max;
+	double sgnd = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+	if (sgnd == 0.0) return;
+	double abs_area = sgnd > 0 ? sgnd : -sgnd;
+	double sgn = sgnd > 0 ? 1.0 : -1.0;
+	double inv_area = 1.0 / abs_area;
+	int own0 = cpu_aa_edge_owns((bx - ax) * sgn, (by - ay) * sgn);
+	int own1 = cpu_aa_edge_owns((cx - bx) * sgn, (cy - by) * sgn);
+	int own2 = cpu_aa_edge_owns((ax - cx) * sgn, (ay - cy) * sgn);
+
+	for (int py = ylo; py <= yhi; py++)
+	{
+		uint32_t* srow = g_aa_plane.samples + (size_t) (py - oy) * sw * 4;
+		for (int px = xlo; px <= xhi; px++)
+		{
+			int mask = 0;
+			for (int s = 0; s < 4; s++)
+			{
+				double qx = (double) px + CPU_AA_XY[s][0];
+				double qy = (double) py + CPU_AA_XY[s][1];
+				double w0 = ((bx - ax) * (qy - ay) - (by - ay) * (qx - ax)) * sgn;
+				double w1 = ((cx - bx) * (qy - by) - (cy - by) * (qx - bx)) * sgn;
+				double w2 = ((ax - cx) * (qy - cy) - (ay - cy) * (qx - cx)) * sgn;
+				if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+				if ((w0 == 0 && !own0) || (w1 == 0 && !own1) || (w2 == 0 && !own2))
+					continue;
+				mask |= 1 << s;
+			}
+			if (mask == 0) continue;
+
+			uint32_t straight;
+			if (!R->is_gradient)
+				straight = R->solid_argb;
+			else
+			{
+				// Shaded once at the pixel centre (extrapolated when the centre
+				// is outside the triangle), as the GPU's per-pixel fragment is.
+				double qx = (double) px + 0.5, qy = (double) py + 0.5;
+				double w0 = ((bx - ax) * (qy - ay) - (by - ay) * (qx - ax)) * sgn;
+				double w1 = ((cx - bx) * (qy - by) - (cy - by) * (qx - bx)) * sgn;
+				double w2 = ((ax - cx) * (qy - cy) - (ay - cy) * (qx - cx)) * sgn;
+				double aA = w1 * inv_area, aB = w2 * inv_area, aC = w0 * inv_area;
+				double sx = aA * R->sx0 + aB * R->sx1 + aC * R->sx2;
+				double sy = aA * R->sy0 + aB * R->sy1 + aC * R->sy2;
+				double gu = R->ia * sx + R->ic * sy + R->itx;
+				double gv = R->ib * sx + R->id * sy + R->ity;
+				double t = grad_t(R->style_type, gu, gv, R->focal_z, R->spread);
+				uint32_t sampled = R->ramp != NULL
+					? grad_sample_ramp(R->ramp, t, R->linear_out)
+					: grad_sample(R->style_id, t);
+				if (R->node_alpha < 0.999)
+				{
+					uint32_t sa = (uint32_t) (((sampled >> 24) & 0xFF)
+					                          * R->node_alpha + 0.5);
+					sampled = (sampled & 0x00FFFFFFu) | (sa << 24);
+				}
+				straight = sampled;
+			}
+			uint32_t pm = cpu_premul(straight);
+			uint32_t* q = srow + (size_t) (px - ox) * 4;
+			for (int s = 0; s < 4; s++)
+				if (mask & (1 << s)) q[s] = cpu_blend_over(q[s], pm);
+		}
+	}
+}
+
 static void raster_tri(RasterCtx* R,
                        double ax, double ay, double bx, double by,
                        double cx, double cy)
 {
+	if (g_aa_plane.samples != NULL && g_aa_plane.buf == R->buf)
+	{
+		raster_tri_aa(R, ax, ay, bx, by, cx, cy);
+		return;
+	}
 	uint32_t* buf = R->buf;
 	int W = R->W, H = R->H;
 	double tx_min = ax < bx ? ax : bx; if (cx < tx_min) tx_min = cx;
@@ -337,6 +553,17 @@ void avm2_cpu_raster_shape(uint32_t* buf, int W, int H, int transparent,
 
 	const uint32_t (*sd)[4] = cpu_shape_table();
 	const float (*cd)[4] = cpu_color_table();
+	if (g_cpu_aa)
+	{
+		double bb[4] = { 1e30, 1e30, -1e30, -1e30 };
+		for (uint32_t j = vert_offset; j < vert_offset + vert_count; j++)
+		{
+			double x = (double) bits_to_f(sd[j][0]), y = (double) bits_to_f(sd[j][1]);
+			double d[2] = { (wa * x + wc * y + wtx) / 20.0, (wb * x + wd * y + wty) / 20.0 };
+			cpu_aa_grow_pt(bb, d[0], d[1]);
+		}
+		cpu_aa_begin(buf, W, H, bb[0] - 1.0, bb[1] - 1.0, bb[2] + 1.0, bb[3] + 1.0);
+	}
 	for (uint32_t t = 0; t + 3 <= vert_count; t += 3)
 	{
 		uint32_t i0 = vert_offset + t;
@@ -410,6 +637,7 @@ void avm2_cpu_raster_shape(uint32_t* buf, int W, int H, int transparent,
 		}
 		raster_tri(&R, dX[0], dY[0], dX[1], dY[1], dX[2], dY[2]);
 	}
+	cpu_aa_end();
 }
 
 // T4 Part B — rasterize an explicit runtime triangle list with a fill
@@ -451,6 +679,16 @@ void avm2_cpu_raster_tris(uint32_t* buf, int W, int H, int transparent,
 		             | (f2b(fill->g) << 8) | f2b(fill->b);
 	}
 
+	if (g_cpu_aa)
+	{
+		double bb[4] = { 1e30, 1e30, -1e30, -1e30 };
+		for (uint32_t j = 0; j < vert_count; j++)
+		{
+			double x = xy_twips[j * 2], y = xy_twips[j * 2 + 1];
+			cpu_aa_grow_pt(bb, (wa * x + wc * y + wtx) / 20.0, (wb * x + wd * y + wty) / 20.0);
+		}
+		cpu_aa_begin(buf, W, H, bb[0] - 1.0, bb[1] - 1.0, bb[2] + 1.0, bb[3] + 1.0);
+	}
 	for (uint32_t t = 0; t + 3 <= vert_count; t += 3)
 	{
 		double sx[3], sy[3], dX[3], dY[3];
@@ -468,6 +706,7 @@ void avm2_cpu_raster_tris(uint32_t* buf, int W, int H, int transparent,
 		}
 		raster_tri(&R, dX[0], dY[0], dX[1], dY[1], dX[2], dY[2]);
 	}
+	cpu_aa_end();
 }
 
 // T6 — rasterize a DefineMorphShape at placement `ratio` (0..1). Each START
@@ -495,6 +734,8 @@ void avm2_cpu_raster_morph(uint32_t* buf, int W, int H, int transparent,
 	const float (*cd)[4] = cpu_color_table();
 	const float (*med)[2] = cpu_morph_end_shape_table();
 	const float (*mecd)[4] = cpu_morph_end_color_table();
+	// Rare in draw(): the plane simply spans the whole target.
+	cpu_aa_begin(buf, W, H, 0.0, 0.0, (double) W, (double) H);
 	for (uint32_t t = 0; t + 3 <= vert_count; t += 3)
 	{
 		uint32_t i0 = vert_offset + t;
@@ -544,4 +785,5 @@ void avm2_cpu_raster_morph(uint32_t* buf, int W, int H, int transparent,
 		R.solid_argb = (a_out << 24) | (cr << 16) | (cg << 8) | cb;
 		raster_tri(&R, dX[0], dY[0], dX[1], dY[1], dX[2], dY[2]);
 	}
+	cpu_aa_end();
 }

@@ -588,6 +588,57 @@ VideoDecoderCtx* video_decoder_create(int codec_id, int deblocking)
 	return ctx;
 }
 
+VideoDecoderCtx* video_avc_decoder_create(void)
+{
+#ifdef SWF_HAVE_LIBAVCODEC
+	if (avcodec_find_decoder(AV_CODEC_ID_H264) == NULL) return NULL;
+	VideoDecoderCtx* ctx = (VideoDecoderCtx*)calloc(1, sizeof(VideoDecoderCtx));
+	if (!ctx) return NULL;
+	ctx->codec_id = 7;
+	ctx->deblocking = VIDEO_DEBLOCK_NONE;   // no H.263 post-filter for AVC
+	return ctx;   // cctx stays NULL until the configuration record arrives
+#else
+	return NULL;
+#endif
+}
+
+int video_avc_decoder_configure(VideoDecoderCtx* ctx,
+                                const unsigned char* record, int record_len)
+{
+#ifdef SWF_HAVE_LIBAVCODEC
+	// ISO 14496-15 §5.2.4.1: configurationVersion must be 1, and the record
+	// is at least the 6-byte fixed header plus the SPS count's byte.
+	if (!ctx || ctx->codec_id != 7 || !record || record_len < 7 || record[0] != 1)
+		return 0;
+	const AVCodec* codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+	if (!codec) return 0;
+
+	// A new record starts a new sequence: drop the old context outright
+	// rather than flushing it, since SPS/PPS (and so the picture size) may
+	// have changed.
+	if (ctx->cctx) avcodec_free_context(&ctx->cctx);
+	ctx->cctx = avcodec_alloc_context3(codec);
+	if (!ctx->cctx) return 0;
+
+	ctx->cctx->extradata = (uint8_t*)av_mallocz((size_t)record_len + AV_INPUT_BUFFER_PADDING_SIZE);
+	if (!ctx->cctx->extradata) { avcodec_free_context(&ctx->cctx); return 0; }
+	memcpy(ctx->cctx->extradata, record, (size_t)record_len);
+	ctx->cctx->extradata_size = record_len;
+	// One thread: frame threading would add its own output delay on top of
+	// the stream's reorder depth, and make that delay depend on the box.
+	ctx->cctx->thread_count = 1;
+
+	if (avcodec_open2(ctx->cctx, codec, NULL) < 0) {
+		avcodec_free_context(&ctx->cctx);
+		return 0;
+	}
+	return 1;
+#else
+	(void)ctx; (void)record; (void)record_len;
+	return 0;
+#endif
+}
+
 void video_decoder_destroy(VideoDecoderCtx* ctx)
 {
 	if (!ctx) return;

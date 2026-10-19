@@ -476,13 +476,15 @@ typedef struct Avm2FontData
 	// and a DefineFont3 face can legitimately store 32768.
 	const int32_t* advances;
 	// Glyph outlines: contour polylines in font units, curves pre-flattened
-	// at recompile time. All NULL when outlines are unavailable (device
+	// at recompile time. Points are f32 and NOT rounded to integer units:
+	// Ruffle tessellates glyphs in f32 (lyon), and a 0.5-unit rounding is
+	// about the rasterizer's subpixel at large text sizes. All NULL when outlines are unavailable (device
 	// fallback font, older generated tables). Contours of glyph g are
 	// contour indices [glyph_contour_start[g], glyph_contour_start[g+1]);
 	// contour k's points are pair indices
 	// [k == glyph_contour_start[g] ? glyph_pt_start[g] : glyph_contour_ends[k-1],
 	//  glyph_contour_ends[k]) into glyph_pts. Contours are implicitly closed.
-	const int32_t* glyph_pts;             // x,y pairs
+	const float* glyph_pts;               // x,y pairs
 	const uint32_t* glyph_pt_start;       // glyph_count+1 entries
 	const uint32_t* glyph_contour_ends;   // absolute pair indices
 	const uint32_t* glyph_contour_start;  // glyph_count+1 entries

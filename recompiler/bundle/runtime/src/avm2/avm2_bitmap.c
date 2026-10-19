@@ -29,6 +29,7 @@
 #include <avm2/avm2_error.h>
 #include <avm2/avm2_filters.h>
 #include <avm2/avm2_globals.h>
+#include <avm2/avm2_jpegxr.h>
 #include <avm2/avm2_main.h>
 #include <memory/heap.h>
 
@@ -2355,12 +2356,122 @@ static void bd_draw_bitmap_node(Avm2Context* ctx, Avm2BitmapDataExt* dst,
 static void bd_draw_shape_walk(Avm2Context* ctx, Avm2BitmapDataExt* dst,
                                Avm2Object* obj,
                                double wa, double wb, double wc, double wd,
+                               double wtx, double wty, double alpha, int depth);
+
+// An object's local-to-global matrix (twips), stopping below the Stage like
+// Ruffle's local_to_global_matrix. m = {a, b, c, d, tx, ty}.
+static void bd_l2g_matrix(Avm2Context* ctx, Avm2Object* obj, double m[6])
+{
+	m[0] = 1.0; m[1] = 0.0; m[2] = 0.0; m[3] = 1.0; m[4] = 0.0; m[5] = 0.0;
+	for (int guard = 0; obj != NULL && guard < 256; guard++)
+	{
+		Avm2DisplayObjectExt* e = avm2_display_ext_of(ctx, obj);
+		if (e == NULL || e->is_stage) break;
+		// m = local(e) * m
+		double a = e->mtx_a, b = e->mtx_b, c = e->mtx_c, d = e->mtx_d;
+		double tx = (double) e->mtx_tx, ty = (double) e->mtx_ty;
+		double r[6] = {
+			a * m[0] + c * m[1], b * m[0] + d * m[1],
+			a * m[2] + c * m[3], b * m[2] + d * m[3],
+			a * m[4] + c * m[5] + tx, b * m[4] + d * m[5] + ty,
+		};
+		memcpy(m, r, sizeof(r));
+		obj = e->parent;
+	}
+}
+
+// `DisplayObject.mask` of a node inside a draw() source (Ruffle display_object.rs
+// apply_standard_mask_and_scroll): the masker renders as a stencil under
+// `world * global_to_local(node) * local_to_global(mask)`, the node's own
+// transform dropped for the draw ROOT (draw() renders it with apply_transform
+// off), so a mask that is not a child of the source keeps its OWN matrix in
+// draw space. The node is drawn as usual, then every pixel outside the mask's
+// coverage goes back to what the target held before.
+static void bd_draw_masked(Avm2Context* ctx, Avm2BitmapDataExt* dst,
+                           Avm2Object* obj, Avm2DisplayObjectExt* ext,
+                           double wa, double wb, double wc, double wd,
+                           double wtx, double wty, double alpha, int depth)
+{
+	size_t n = (size_t) dst->width * dst->height;
+	uint32_t* snap = (uint32_t*) malloc(n * sizeof(uint32_t));
+	uint32_t* cov = (uint32_t*) calloc(n, sizeof(uint32_t));
+	Avm2Object* mask = ext->mask;
+	if (snap == NULL || cov == NULL)
+	{
+		free(snap);
+		free(cov);
+		return;
+	}
+	memcpy(snap, dst->pixels, n * sizeof(uint32_t));
+
+	double g[6], mm[6] = { 1.0, 0.0, 0.0, 1.0, 0.0, 0.0 };
+	bd_l2g_matrix(ctx, mask, mm);
+	if (depth > 0)
+	{
+		// mm = inverse(l2g(node)) * l2g(mask)
+		bd_l2g_matrix(ctx, obj, g);
+		double det = g[0] * g[3] - g[2] * g[1];
+		if (det != 0.0 && isfinite(det))
+		{
+			double ia = g[3] / det, ib = -g[1] / det;
+			double ic = -g[2] / det, id = g[0] / det;
+			double itx = -(ia * g[4] + ic * g[5]);
+			double ity = -(ib * g[4] + id * g[5]);
+			double r[6] = {
+				ia * mm[0] + ic * mm[1], ib * mm[0] + id * mm[1],
+				ia * mm[2] + ic * mm[3], ib * mm[2] + id * mm[3],
+				ia * mm[4] + ic * mm[5] + itx, ib * mm[4] + id * mm[5] + ity,
+			};
+			memcpy(mm, r, sizeof(r));
+		}
+	}
+	// The mask's parent chain is already in mm; render it as a root (its own
+	// matrix is in mm too, which bd_draw_shape_walk expects in `w*`).
+	Avm2BitmapDataExt mdst = *dst;
+	mdst.pixels = cov;
+	mdst.transparency = 1;
+	Avm2Object* saved_mask = ext->mask;
+	ext->mask = NULL;  // the node itself, unmasked, below
+	bd_draw_shape_walk(ctx, &mdst, mask,
+	                   wa * mm[0] + wc * mm[1], wb * mm[0] + wd * mm[1],
+	                   wa * mm[2] + wc * mm[3], wb * mm[2] + wd * mm[3],
+	                   wa * mm[4] + wc * mm[5] + wtx, wb * mm[4] + wd * mm[5] + wty,
+	                   1.0, depth + 1);
+	bd_draw_shape_walk(ctx, dst, obj, wa, wb, wc, wd, wtx, wty, alpha, depth);
+	ext->mask = saved_mask;
+
+	for (size_t i = 0; i < n; i++)
+	{
+		uint32_t k = CA(cov[i]);
+		if (k == 0xFF) continue;
+		uint32_t o = snap[i], c = dst->pixels[i];
+		if (k == 0) { dst->pixels[i] = o; continue; }
+		uint32_t out = 0;
+		for (int sh = 0; sh < 32; sh += 8)
+		{
+			int32_t ov = (int32_t) ((o >> sh) & 0xFF), cv = (int32_t) ((c >> sh) & 0xFF);
+			out |= (uint32_t) (ov + ((cv - ov) * (int32_t) k + 127) / 255) << sh;
+		}
+		dst->pixels[i] = out;
+	}
+	free(snap);
+	free(cov);
+}
+
+static void bd_draw_shape_walk(Avm2Context* ctx, Avm2BitmapDataExt* dst,
+                               Avm2Object* obj,
+                               double wa, double wb, double wc, double wd,
                                double wtx, double wty, double alpha, int depth)
 {
 	if (obj == NULL || depth > 64) return;
 	Avm2DisplayObjectExt* ext = avm2_display_ext_of(ctx, obj);
 	if (ext == NULL) return;
 	if (!ext->is_stage && !ext->visible) return;
+	if (ext->mask != NULL && dst->pixels != NULL)
+	{
+		bd_draw_masked(ctx, dst, obj, ext, wa, wb, wc, wd, wtx, wty, alpha, depth);
+		return;
+	}
 
 	if (ext->is_bitmap)
 		// A Bitmap inside the drawn subtree. avm2_cpu_walk has had this arm all
@@ -2427,6 +2538,9 @@ static void bd_draw_shape_walk(Avm2Context* ctx, Avm2BitmapDataExt* dst,
 		Avm2Object* child = ext->render_list[i];
 		Avm2DisplayObjectExt* cext = avm2_display_ext_of(ctx, child);
 		if (cext == NULL) continue;
+		// A masker renders only as its maskee's stencil (Ruffle
+		// render_base `skip_masks`), never as content.
+		if (cext->maskee != NULL) continue;
 		// child local matrix (twips->twips): compose world * child (mat_mul).
 		double ca = cext->mtx_a, cb = cext->mtx_b, cc = cext->mtx_c, cd = cext->mtx_d;
 		double ctx_ = (double) cext->mtx_tx, cty = (double) cext->mtx_ty;
@@ -2471,6 +2585,44 @@ static void bd_blit_alpha_erase(Avm2BitmapDataExt* dst, Avm2BitmapDataExt* src,
 			bd_set_raw(dst, dxx, dyy, out);
 		}
 	}
+}
+
+// draw() clipRect for the rendered (non-blit) sources: Ruffle pushes the rect
+// as a stencil mask in DESTINATION pixels, not transformed by the draw matrix
+// (operations.rs:1487), so a pixel survives iff its centre is inside the rect.
+// Implemented as snapshot -> draw -> restore everything outside. NULL (no
+// snapshot) when the rect covers the whole target.
+static uint32_t* bd_clip_begin(const Avm2BitmapDataExt* dst, double x, double y,
+                               double w, double h, int32_t px[4])
+{
+	px[0] = (int32_t) ceil(x - 0.5);
+	px[1] = (int32_t) ceil(y - 0.5);
+	px[2] = (int32_t) ceil(x + w - 0.5);
+	px[3] = (int32_t) ceil(y + h - 0.5);
+	if (dst->pixels == NULL
+	    || (px[0] <= 0 && px[1] <= 0
+	        && px[2] >= (int32_t) dst->width && px[3] >= (int32_t) dst->height))
+		return NULL;
+	size_t n = (size_t) dst->width * dst->height;
+	uint32_t* snap = (uint32_t*) malloc(n * sizeof(uint32_t));
+	if (snap != NULL) memcpy(snap, dst->pixels, n * sizeof(uint32_t));
+	return snap;
+}
+
+static void bd_clip_end(Avm2BitmapDataExt* dst, uint32_t* snap, const int32_t px[4])
+{
+	if (snap == NULL) return;
+	for (int32_t y = 0; y < (int32_t) dst->height; y++)
+	{
+		int inside_row = y >= px[1] && y < px[3];
+		for (int32_t x = 0; x < (int32_t) dst->width; x++)
+		{
+			if (inside_row && x >= px[0] && x < px[2]) continue;
+			size_t i = (size_t) y * dst->width + (size_t) x;
+			dst->pixels[i] = snap[i];
+		}
+	}
+	free(snap);
 }
 
 static Avm2Value bd_draw(Avm2Activation* act)
@@ -2523,24 +2675,25 @@ static Avm2Value bd_draw(Avm2Activation* act)
 	int blend_mode = BM_NORMAL;
 	if (arg_present(act, 3))
 	{
-		const Avm2String* bm = avm2_coerce_to_string(ctx, act->args[3]);
-		if (bm != NULL && bm->utf8 != NULL)
+		const Avm2String* bms = avm2_coerce_to_string(ctx, act->args[3]);
+		const char* bm = (bms != NULL && bms->utf8 != NULL) ? avm2_string_cstr(ctx, bms) : NULL;
+		if (bm != NULL)
 		{
-			if (strcmp(bm->utf8, "alpha") == 0 || strcmp(bm->utf8, "erase") == 0)
+			if (strcmp(bm, "alpha") == 0 || strcmp(bm, "erase") == 0)
 			{
 				blend_alpha_or_erase = 1;
-				blend_is_erase = (strcmp(bm->utf8, "erase") == 0);
+				blend_is_erase = (strcmp(bm, "erase") == 0);
 			}
-			else if (strcmp(bm->utf8, "multiply") == 0)   blend_mode = BM_MULTIPLY;
-			else if (strcmp(bm->utf8, "hardlight") == 0)  blend_mode = BM_HARDLIGHT;
-			else if (strcmp(bm->utf8, "add") == 0)        blend_mode = BM_ADD;
-			else if (strcmp(bm->utf8, "subtract") == 0)   blend_mode = BM_SUBTRACT;
-			else if (strcmp(bm->utf8, "screen") == 0)     blend_mode = BM_SCREEN;
-			else if (strcmp(bm->utf8, "lighten") == 0)    blend_mode = BM_LIGHTEN;
-			else if (strcmp(bm->utf8, "darken") == 0)     blend_mode = BM_DARKEN;
-			else if (strcmp(bm->utf8, "difference") == 0) blend_mode = BM_DIFFERENCE;
-			else if (strcmp(bm->utf8, "invert") == 0)     blend_mode = BM_INVERT;
-			else if (strcmp(bm->utf8, "overlay") == 0)    blend_mode = BM_OVERLAY;
+			else if (strcmp(bm, "multiply") == 0)   blend_mode = BM_MULTIPLY;
+			else if (strcmp(bm, "hardlight") == 0)  blend_mode = BM_HARDLIGHT;
+			else if (strcmp(bm, "add") == 0)        blend_mode = BM_ADD;
+			else if (strcmp(bm, "subtract") == 0)   blend_mode = BM_SUBTRACT;
+			else if (strcmp(bm, "screen") == 0)     blend_mode = BM_SCREEN;
+			else if (strcmp(bm, "lighten") == 0)    blend_mode = BM_LIGHTEN;
+			else if (strcmp(bm, "darken") == 0)     blend_mode = BM_DARKEN;
+			else if (strcmp(bm, "difference") == 0) blend_mode = BM_DIFFERENCE;
+			else if (strcmp(bm, "invert") == 0)     blend_mode = BM_INVERT;
+			else if (strcmp(bm, "overlay") == 0)    blend_mode = BM_OVERLAY;
 		}
 	}
 
@@ -2571,17 +2724,42 @@ static Avm2Value bd_draw(Avm2Activation* act)
 	if ((!identity_2x2 && !can_affine) || !extra_matrix_ok)
 		return avm2_undefined();  // needs the offscreen GPU render path
 
+	// clipRect (arg 4). The translation-only BitmapData blit applies it as a
+	// pixel region (Ruffle's CPU fast path, operations.rs:1416); every other
+	// source goes through the snapshot clip above.
+	int has_clip = 0;
+	double clip_x = 0.0, clip_y = 0.0, clip_w = 0.0, clip_h = 0.0;
+	if (arg_present(act, 4) && act->args[4].kind == AVM2_VALUE_OBJECT)
+	{
+		Avm2Value cr = act->args[4];
+		clip_x = read_prop_num(ctx, cr, "x");
+		clip_y = read_prop_num(ctx, cr, "y");
+		clip_w = read_prop_num(ctx, cr, "width");
+		clip_h = read_prop_num(ctx, cr, "height");
+		has_clip = isfinite(clip_x) && isfinite(clip_y)
+		           && isfinite(clip_w) && isfinite(clip_h);
+	}
+	int clip_by_region = text_src == NULL && shape_src == NULL && identity_2x2
+	                     && !blend_alpha_or_erase;
+	int32_t clip_px[4] = { 0, 0, 0, 0 };
+	uint32_t* clip_snap = (has_clip && !clip_by_region)
+		? bd_clip_begin(dst, clip_x, clip_y, clip_w, clip_h, clip_px) : NULL;
+
 	// alpha/erase with a Bitmap display-object source (the BitmapData-source
 	// form already returned above as the Flash no-op quirk). Translation-only,
 	// and no other source kind: everything else keeps the old no-op.
 	if (blend_alpha_or_erase)
 	{
 		if (src == NULL || src->disposed || src->pixels == NULL || !identity_2x2)
+		{
+			free(clip_snap);
 			return avm2_undefined();  // needs the offscreen GPU render path
+		}
 		bd_blit_alpha_erase(dst, src,
 		                    (int32_t) floor(mtx + extra_tx),
 		                    (int32_t) floor(mty + extra_ty),
 		                    blend_is_erase);
+		bd_clip_end(dst, clip_snap, clip_px);
 		return avm2_undefined();
 	}
 
@@ -2611,13 +2789,13 @@ static Avm2Value bd_draw(Avm2Activation* act)
 		               && ro == 0 && go == 0 && bo == 0 && ao == 0);
 	}
 
-	// TextField source: CPU glyph rasterization (clipRect, like the bitmap
-	// paths below, is not supported yet).
+	// TextField source: CPU glyph rasterization.
 	if (text_src != NULL)
 	{
 		bd_draw_textfield(ctx, dst, text_src, ma, mb, mc, md, mtx, mty,
 		                  has_cxform, rm, gm, bm, am, ro, go, bo, ao,
 		                  blend_mode);
+		bd_clip_end(dst, clip_snap, clip_px);
 		return avm2_undefined();
 	}
 
@@ -2626,8 +2804,13 @@ static Avm2Value bd_draw(Avm2Activation* act)
 	// the draw matrix's pixel translation (mtx,mty) is scaled to twips.
 	if (shape_src != NULL)
 	{
+		// Flash anti-aliases vector draw() whatever the stage quality (see
+		// avm2_cpu_raster.c "4x-sample anti-aliasing").
+		int prev_aa = avm2_cpu_raster_set_aa(1);
 		bd_draw_shape_walk(ctx, dst, shape_src, ma, mb, mc, md,
 		                   mtx * 20.0, mty * 20.0, 1.0, 0);
+		avm2_cpu_raster_set_aa(prev_aa);
+		bd_clip_end(dst, clip_snap, clip_px);
 		return avm2_undefined();
 	}
 
@@ -2649,7 +2832,10 @@ static Avm2Value bd_draw(Avm2Activation* act)
 		// floor(NaN) into out-of-bounds sampling below.
 		if (det == 0.0 || !isfinite(det)
 		    || !isfinite(mtx) || !isfinite(mty))
+		{
+			free(clip_snap);
 			return avm2_undefined();
+		}
 		double sw = (double) src->width, sh = (double) src->height;
 		double cxs[4] = { 0.0, sw, 0.0, sw };
 		double cys[4] = { 0.0, 0.0, sh, sh };
@@ -2701,17 +2887,27 @@ static Avm2Value bd_draw(Avm2Activation* act)
 				bd_set_raw(dst, (uint32_t) dx, (uint32_t) dy, color);
 			}
 		}
+		bd_clip_end(dst, clip_snap, clip_px);
 		return avm2_undefined();
 	}
 
 	int32_t tx = (int32_t) floor(mtx + extra_tx);
 	int32_t ty = (int32_t) floor(mty + extra_ty);
 
-	// Whole source at (tx,ty) in dest (clip_rect not supported yet).
+	// Whole source at (tx,ty) in dest, or the clipRect's pixel region (Ruffle
+	// operations.rs:1416: floor the origin, ceil the size).
 	PixelRegion src_region = pr_whole(src->width, src->height);
 	PixelRegion dst_region = pr_whole(dst->width, dst->height);
-	pr_clamp_intersection(&dst_region, tx, ty, 0, 0,
-	                      (int32_t) src->width, (int32_t) src->height, &src_region);
+	if (has_clip)
+	{
+		int32_t cx = (int32_t) floor(clip_x), cy = (int32_t) floor(clip_y);
+		pr_clamp_intersection(&dst_region, cx, cy, cx - tx, cy - ty,
+		                      (int32_t) ceil(clip_w), (int32_t) ceil(clip_h),
+		                      &src_region);
+	}
+	else
+		pr_clamp_intersection(&dst_region, tx, ty, 0, 0,
+		                      (int32_t) src->width, (int32_t) src->height, &src_region);
 	if (pr_w(&dst_region) == 0 || pr_h(&dst_region) == 0) return avm2_undefined();
 
 	uint32_t rw = pr_w(&dst_region), rh = pr_h(&dst_region);
@@ -3667,11 +3863,51 @@ void avm2_bitmap_wire_bitmap(Avm2Context* ctx, Avm2Class* bitmap_cls)
 // with "not enough pixels" — the test still expects a Bitmap whose width is
 // 1024. Only a buffer whose header is unreadable gives up and returns NULL,
 // which leaves `content` null without inventing an ioError no test asserts.
+// Ruffle decode_jpegxr (render/src/utils.rs): jxrlib's rows are straight RGBA
+// and the bitmap is always transparent (BitmapFormat::Rgba). The rows are
+// premultiplied here exactly like the PNG/GIF path below: loader_jpegxr_alpha's
+// golden is the straight-alpha composite of THESE decoded values (its (5,30)
+// pixel 250,72,0 @127 over 0xCC gives 226,137,102; the source PNG's 255 red
+// would give 229), so storing them un-premultiplied would composite
+// additively. A decode failure (or a build without SWF_HAVE_LIBJXR) leaves
+// `content` null, as the Rust `?` does.
+static Avm2Object* bitmap_from_jpegxr(Avm2Context* ctx, const uint8_t* data,
+                                      uint32_t len)
+{
+	uint32_t w = 0, h = 0;
+	uint8_t* rgba = NULL;
+	if (!avm2_jxr_decode_rgba(data, len, &w, &h, &rgba)) return NULL;
+	Avm2Object* bdo = bd_alloc_bare(ctx);
+	if (bdo == NULL)
+	{
+		free(rgba);
+		return NULL;
+	}
+	Avm2BitmapDataExt* bd = (Avm2BitmapDataExt*) bdo->native_ext;
+	bd_alloc(ctx, bd, w, h, 1);
+	uint32_t n = w * h;
+	for (uint32_t i = 0; i < n; i++)
+	{
+		const uint8_t* c = rgba + (size_t) i * 4;
+		uint32_t a = c[3];
+		bd->pixels[i] = CMK(c[0] * a / 255, c[1] * a / 255, c[2] * a / 255, a);
+	}
+	free(rgba);
+	Avm2Value arg = avm2_object_value(bdo);
+	Avm2Value bmp = avm2_class_construct(ctx, g_bitmap_class, &arg, 1);
+	return bmp.kind == AVM2_VALUE_OBJECT ? bmp.u.obj : NULL;
+}
+
 Avm2Object* avm2_bitmap_from_image_bytes(Avm2Context* ctx, const uint8_t* data,
                                          uint32_t len)
 {
 	if (ctx == NULL || data == NULL || len == 0 || g_bitmap_class == NULL)
 		return NULL;
+
+	// JPEG-XR ("II\xBC\x01", render/src/utils.rs determine_jpeg_tag_format).
+	if (len >= 4 && data[0] == 0x49 && data[1] == 0x49 && data[2] == 0xBC
+	    && data[3] == 0x01)
+		return bitmap_from_jpegxr(ctx, data, len);
 
 	int w = 0, h = 0, comp = 0;
 	uint8_t* rgba = stbi_load_from_memory(data, (int) len, &w, &h, &comp, 4);

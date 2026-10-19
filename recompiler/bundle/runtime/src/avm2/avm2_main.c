@@ -895,6 +895,15 @@ void runSWF_avm2(SWFAppContext* app_context)
 		}
 		avm2_try_pop_frame(&top);
 
+		// After-tick hook (per-test test_harness.c, e.g. the ExternalInterface
+		// provider's host calls) — the AVM1 loops' hook, 1-based tick count.
+		{
+			typedef void (*AfterTickHandler)(SWFAppContext*, int);
+			extern AfterTickHandler g_after_tick_handler;
+			if (g_after_tick_handler)
+				g_after_tick_handler(ctx->app, (int) tick + 1);
+		}
+
 		size_t tick_peak = heap_peak_since_mark_bytes(ctx->app);
 		size_t gross = (tick_peak > tick_base) ? (tick_peak - tick_base) : 0;
 		if (tick == 0)

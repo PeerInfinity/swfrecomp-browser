@@ -287,6 +287,15 @@ typedef struct ASArray
 	u32 mt_pending_idx;     // its slot in that queue, so an inline destroy can tombstone it
 	struct ASArray* mt_prev;   // intrusive all-arrays list (O(1) link/unlink)
 	struct ASArray* mt_next;
+
+	// Creation-time `_global.Array` (Ruffle dd4e73d59; see arrayResolveGlobalCtor
+	// in action.c). virt_ctor is a VIRTUAL own `constructor` (DONT_ENUM |
+	// DONT_DELETE) kept out of props so array literals allocate nothing extra;
+	// it is materialised into props on write. no_proto_fallback: the array was
+	// created while `_global.Array` was replaced, so member reads must not fall
+	// back to the builtin Array.prototype.
+	struct ASFunction* virt_ctor;
+	u8 no_proto_fallback;
 } ASArray;
 
 /**

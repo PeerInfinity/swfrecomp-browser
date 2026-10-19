@@ -36,6 +36,7 @@
 
 #include <avm2/avm2_class.h>
 #include <avm2/avm2_error.h>
+#include <avm2/avm2_external.h>
 #include <avm2/avm2_gc.h>
 #include <avm2/avm2_globals.h>
 #include <avm2/avm2_main.h>
@@ -58,6 +59,7 @@ typedef struct Avm2EiCallback
 static Avm2EiCallback g_ei_callbacks[AVM2_EI_MAX_CALLBACKS];
 static Avm2Context* g_ei_ctx = NULL;   // set at registration (one VM per process)
 static bool g_marshall_exceptions = false;
+static Avm2EiProvider g_ei_provider = NULL;   // test harness only (avm2_external.h)
 
 // ---------------------------------------------------------------------------
 // Availability gate
@@ -65,6 +67,7 @@ static bool g_marshall_exceptions = false;
 
 static int ei_available_now(void)
 {
+	if (g_ei_provider != NULL) return 1;
 #if defined(__EMSCRIPTEN__) && !defined(OFFSCREEN_RENDER)
 	static int memo = -1;
 	if (memo < 0)
@@ -241,6 +244,220 @@ static void ei_notify_callback(const char* name, int registered)
 #endif // __EMSCRIPTEN__ && !OFFSCREEN_RENDER
 
 // ---------------------------------------------------------------------------
+// Structured values + test provider (avm2_external.h)
+// ---------------------------------------------------------------------------
+//
+// Ruffle's external::Value with its from_avm2 / into_avm2 conversions
+// (core/src/external.rs), used only when a test harness installed a provider.
+// Trees are C-heap owned, so nothing here needs GC rooting; the transient
+// AVM2 values built by into_avm2 live only within one call, and the GC only
+// collects between ticks.
+
+Avm2EiValue avm2_ei_undefined(void) { Avm2EiValue v = {0}; v.kind = AVM2_EI_UNDEFINED; return v; }
+Avm2EiValue avm2_ei_null(void) { Avm2EiValue v = {0}; v.kind = AVM2_EI_NULL; return v; }
+Avm2EiValue avm2_ei_bool(bool b) { Avm2EiValue v = {0}; v.kind = AVM2_EI_BOOL; v.b = b; return v; }
+Avm2EiValue avm2_ei_number(double d) { Avm2EiValue v = {0}; v.kind = AVM2_EI_NUMBER; v.d = d; return v; }
+
+static Avm2EiValue ei_string_n(const char* s, uint32_t len)
+{
+	Avm2EiValue v = {0};
+	v.kind = AVM2_EI_STRING;
+	v.str = malloc((size_t) len + 1);
+	memcpy(v.str, s, len);
+	v.str[len] = '\0';
+	return v;
+}
+
+Avm2EiValue avm2_ei_string(const char* s) { return ei_string_n(s, (uint32_t) strlen(s)); }
+
+Avm2EiValue avm2_ei_list(const Avm2EiValue* items, uint32_t n)
+{
+	Avm2EiValue v = {0};
+	v.kind = AVM2_EI_LIST;
+	v.count = n;
+	if (n > 0)
+	{
+		v.items = malloc(n * sizeof(Avm2EiValue));
+		memcpy(v.items, items, n * sizeof(Avm2EiValue));
+	}
+	return v;
+}
+
+// Insert key → value into a sorted map, replacing an existing key (BTreeMap
+// insert). Takes ownership of `key` and `val`.
+static void ei_map_insert(Avm2EiValue* m, uint32_t* cap, char* key, Avm2EiValue val)
+{
+	uint32_t pos = 0;
+	while (pos < m->count && strcmp(m->keys[pos], key) < 0) pos++;
+	if (pos < m->count && strcmp(m->keys[pos], key) == 0)
+	{
+		free(key);
+		avm2_ei_value_free(&m->items[pos]);
+		m->items[pos] = val;
+		return;
+	}
+	if (m->count == *cap)
+	{
+		*cap = *cap ? *cap * 2 : 8;
+		m->keys = realloc(m->keys, *cap * sizeof(char*));
+		m->items = realloc(m->items, *cap * sizeof(Avm2EiValue));
+	}
+	memmove(&m->keys[pos + 1], &m->keys[pos], (m->count - pos) * sizeof(char*));
+	memmove(&m->items[pos + 1], &m->items[pos], (m->count - pos) * sizeof(Avm2EiValue));
+	m->keys[pos] = key;
+	m->items[pos] = val;
+	m->count++;
+}
+
+Avm2EiValue avm2_ei_object(char** keys, Avm2EiValue* values, uint32_t n)
+{
+	Avm2EiValue m = {0};
+	m.kind = AVM2_EI_OBJECT;
+	uint32_t cap = 0;
+	for (uint32_t i = 0; i < n; i++) ei_map_insert(&m, &cap, keys[i], values[i]);
+	free(keys);
+	free(values);
+	return m;
+}
+
+void avm2_ei_value_free(Avm2EiValue* v)
+{
+	if (v == NULL) return;
+	free(v->str);
+	for (uint32_t i = 0; i < v->count; i++)
+	{
+		if (v->items != NULL) avm2_ei_value_free(&v->items[i]);
+		if (v->keys != NULL) free(v->keys[i]);
+	}
+	free(v->items);
+	free(v->keys);
+	memset(v, 0, sizeof(*v));
+}
+
+// Value::from_avm2. Arrays become List (holes read as Null); every other
+// object becomes Object over its enumerable properties. A cyclic graph would
+// recurse forever in Ruffle; cap the depth instead.
+static Avm2EiValue ei_from_avm2(Avm2Context* ctx, Avm2Value v, int depth)
+{
+	switch (v.kind)
+	{
+		case AVM2_VALUE_UNDEFINED: return avm2_ei_undefined();
+		case AVM2_VALUE_NULL:      return avm2_ei_null();
+		case AVM2_VALUE_BOOL:      return avm2_ei_bool(v.u.b);
+		case AVM2_VALUE_INTEGER:   return avm2_ei_number((double) v.u.i);
+		case AVM2_VALUE_NUMBER:    return avm2_ei_number(v.u.d);
+		case AVM2_VALUE_STRING:
+		{
+			const Avm2String* s = avm2_coerce_to_string(ctx, v);
+			return ei_string_n(s->utf8, s->len);
+		}
+		case AVM2_VALUE_OBJECT:
+		{
+			Avm2Object* obj = v.u.obj;
+			if (obj == NULL || depth > 256) return avm2_ei_null();
+			if (obj->kind == AVM2_OBJ_ARRAY)
+			{
+				Avm2ArrayExt* ext = avm2_array_ext(obj);
+				uint32_t n = ext ? ext->length : 0;
+				Avm2EiValue l = {0};
+				l.kind = AVM2_EI_LIST;
+				l.count = n;
+				if (n > 0) l.items = calloc(n, sizeof(Avm2EiValue));
+				for (uint32_t i = 0; i < n; i++)
+				{
+					Avm2Value e = avm2_array_get(obj, i);
+					l.items[i] = (e.kind == AVM2_VALUE_HOLE)
+						? avm2_ei_null() : ei_from_avm2(ctx, e, depth + 1);
+				}
+				return l;
+			}
+			Avm2EiValue m = {0};
+			m.kind = AVM2_EI_OBJECT;
+			uint32_t cap = 0;
+			for (uint32_t idx = avm2_object_next_enumerant(obj, 0); idx != 0;
+			     idx = avm2_object_next_enumerant(obj, idx))
+			{
+				const Avm2String* name = avm2_coerce_to_string(ctx,
+					avm2_object_enumerant_name(ctx, obj, idx));
+				char* key = malloc((size_t) name->len + 1);
+				memcpy(key, name->utf8, name->len);
+				key[name->len] = '\0';
+				Avm2Value ev = avm2_object_enumerant_value(ctx, obj, idx);
+				ei_map_insert(&m, &cap, key, ei_from_avm2(ctx, ev, depth + 1));
+			}
+			return m;
+		}
+		default:
+			return avm2_ei_null();
+	}
+}
+
+// Value::into_avm2: Object → a fresh plain Object (dynamic props in key
+// order), List → Array.
+static Avm2Value ei_into_avm2(Avm2Context* ctx, const Avm2EiValue* v)
+{
+	switch (v->kind)
+	{
+		case AVM2_EI_NULL:   return avm2_null();
+		case AVM2_EI_BOOL:   return avm2_bool(v->b);
+		case AVM2_EI_NUMBER: return avm2_number(v->d);
+		case AVM2_EI_STRING:
+			return avm2_string(avm2_string_new(ctx, v->str, (uint32_t) strlen(v->str)));
+		case AVM2_EI_LIST:
+		{
+			Avm2Object* arr = avm2_array_new(ctx, 0);
+			for (uint32_t i = 0; i < v->count; i++)
+			{
+				avm2_array_push(ctx, arr, ei_into_avm2(ctx, &v->items[i]));
+			}
+			return avm2_object_value(arr);
+		}
+		case AVM2_EI_OBJECT:
+		{
+			Avm2Object* obj = avm2_object_alloc(ctx, AVM2_OBJ_SCRIPT, 0);
+			obj->cls = ctx->builtins.object_class;
+			obj->proto = ctx->builtins.object_class->prototype_obj;
+			for (uint32_t i = 0; i < v->count; i++)
+			{
+				avm2_object_set_dynamic(ctx, obj, v->keys[i], (uint32_t) strlen(v->keys[i]),
+				                        ei_into_avm2(ctx, &v->items[i]));
+			}
+			return avm2_object_value(obj);
+		}
+		default:
+			return avm2_undefined();
+	}
+}
+
+void avm2_ei_set_provider(Avm2EiProvider provider)
+{
+	g_ei_provider = provider;
+}
+
+// ExternalInterface.call under a provider (Ruffle external_interface.rs call).
+static Avm2Value ei_provider_call(Avm2Activation* act)
+{
+	Avm2Context* ctx = act->ctx;
+	const Avm2String* name = avm2_coerce_to_string(ctx, act->args[0]);
+	char* cname = malloc((size_t) name->len + 1);
+	memcpy(cname, name->utf8, name->len);
+	cname[name->len] = '\0';
+
+	uint32_t n = act->argc - 1;
+	Avm2EiValue* args = n ? calloc(n, sizeof(Avm2EiValue)) : NULL;
+	for (uint32_t i = 0; i < n; i++) args[i] = ei_from_avm2(ctx, act->args[i + 1], 0);
+
+	Avm2EiValue r = g_ei_provider(cname, args, n);
+
+	for (uint32_t i = 0; i < n; i++) avm2_ei_value_free(&args[i]);
+	free(args);
+	free(cname);
+	Avm2Value out = ei_into_avm2(ctx, &r);
+	avm2_ei_value_free(&r);
+	return out;
+}
+
+// ---------------------------------------------------------------------------
 // Static methods / properties
 // ---------------------------------------------------------------------------
 
@@ -286,10 +503,11 @@ static Avm2Value ei_add_callback(Avm2Activation* act)
 	if (!ei_available_now()) ei_throw_2067(ctx);
 	if (act->argc < 1) return avm2_undefined();
 
-	const Avm2String* name = avm2_coerce_to_string(ctx, act->args[0]);
+	const Avm2String* name_s = avm2_coerce_to_string(ctx, act->args[0]);
+	const char* name = avm2_string_cstr(ctx, name_s);
 	Avm2Value fn = (act->argc > 1) ? act->args[1] : avm2_null();
 
-	Avm2EiCallback* cb = ei_find_callback(name->utf8);
+	Avm2EiCallback* cb = ei_find_callback(name);
 
 	// null/undefined closure unregisters (Ruffle's external_interface test:
 	// addCallback("removeMe", null) removes the callback).
@@ -302,7 +520,7 @@ static Avm2Value ei_add_callback(Avm2Activation* act)
 			cb->fn = avm2_undefined();
 			cb->in_use = 0;
 #if defined(__EMSCRIPTEN__) && !defined(OFFSCREEN_RENDER)
-			ei_notify_callback(name->utf8, 0);
+			ei_notify_callback(name, 0);
 #endif
 		}
 		return avm2_undefined();
@@ -315,12 +533,12 @@ static Avm2Value ei_add_callback(Avm2Activation* act)
 			if (!g_ei_callbacks[i].in_use) { cb = &g_ei_callbacks[i]; break; }
 		}
 		if (cb == NULL) return avm2_undefined();   // registry full
-		cb->name = strdup(name->utf8);
+		cb->name = strdup(name);
 		cb->in_use = 1;
 	}
 	cb->fn = fn;
 #if defined(__EMSCRIPTEN__) && !defined(OFFSCREEN_RENDER)
-	ei_notify_callback(name->utf8, 1);
+	ei_notify_callback(name, 1);
 #endif
 	return avm2_undefined();
 }
@@ -330,6 +548,8 @@ static Avm2Value ei_call(Avm2Activation* act)
 	Avm2Context* ctx = act->ctx;
 	if (!ei_available_now()) ei_throw_2067(ctx);
 	if (act->argc < 1) return avm2_null();
+
+	if (g_ei_provider != NULL) return ei_provider_call(act);
 
 #if defined(__EMSCRIPTEN__) && !defined(OFFSCREEN_RENDER)
 	const Avm2String* name = avm2_coerce_to_string(ctx, act->args[0]);
@@ -343,7 +563,7 @@ static Avm2Value ei_call(Avm2Activation* act)
 	}
 	ei_buf_put(&b, "]", 1);
 
-	char* ret = ei_browser_call(name->utf8, b.buf);
+	char* ret = ei_browser_call(avm2_string_cstr(ctx, name), b.buf);
 	free(b.buf);
 
 	if (ret == NULL) return avm2_null();
@@ -422,6 +642,31 @@ const char* avm2_ei_dispatch(const char* name, const char* arg, int has_arg)
 	return out;
 }
 #endif
+
+// Host → AS3, structured (Ruffle Player::call_internal_interface +
+// Callback::call): unknown name → Null; the callback runs with a null
+// receiver; a throw is reported as uncaught and yields Null.
+Avm2EiValue avm2_ei_call_internal(const char* name, const Avm2EiValue* args,
+                                  uint32_t argc)
+{
+	Avm2Context* ctx = g_ei_ctx;
+	Avm2EiCallback* cb = (ctx != NULL && name != NULL) ? ei_find_callback(name) : NULL;
+	if (cb == NULL) return avm2_ei_null();
+
+	Avm2EiValue out = avm2_ei_null();
+	Avm2Value* vals = argc ? calloc(argc, sizeof(Avm2Value)) : NULL;
+	Avm2TryFrame top;
+	avm2_try_push_catch_all(ctx, &top);
+	if (setjmp(top.jb) == 0)
+	{
+		for (uint32_t i = 0; i < argc; i++) vals[i] = ei_into_avm2(ctx, &args[i]);
+		Avm2Value r = avm2_call_value(ctx, cb->fn, avm2_null(), vals, argc);
+		out = ei_from_avm2(ctx, r, 0);
+	}
+	avm2_try_pop_frame(&top);
+	free(vals);
+	return out;
+}
 
 // ---------------------------------------------------------------------------
 // GC + registration

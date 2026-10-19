@@ -163,11 +163,17 @@ static void aq_drain(SWFAppContext* app_context, const DrainFilter* f)
 		// later in the same drain window. Catch-up-queued entries keep the
 		// existing skip filter so goto_commands aggregation (place+remove in
 		// same goto sweep) remains canceled.
+		// Exception: CLIP_CONSTRUCT always fires. Flash runs
+		// onClipEvent(construct) for every clip placed during a goto sweep,
+		// even one the same sweep removes (gnash misc-ming.all/action_order/
+		// action_execution_order_test6: C1,C2,C3 precede L1..U3). Load and
+		// unload stay canceled. CLIP_INIT/REGISTER_CTOR keep the skip: no
+		// corpus row measures them against Flash.
 		int fires_chronologically =
-			(entry.kind == AQ_KIND_CLIP_INIT
-			 || entry.kind == AQ_KIND_CLIP_CONSTRUCT
-			 || entry.kind == AQ_KIND_REGISTER_CTOR)
-			&& !entry.queued_in_catchup;
+			entry.kind == AQ_KIND_CLIP_CONSTRUCT
+			|| ((entry.kind == AQ_KIND_CLIP_INIT
+			     || entry.kind == AQ_KIND_REGISTER_CTOR)
+			    && !entry.queued_in_catchup);
 		if (!entry.is_unload && entry.clip && !fires_chronologically) {
 			if (entry.clip->avm1_removed || entry.clip->pending_removal) {
 				continue;

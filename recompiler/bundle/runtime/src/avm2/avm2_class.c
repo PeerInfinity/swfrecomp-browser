@@ -15,6 +15,7 @@
 #include <avm2/avm2_gc.h>
 #include <avm2/avm2_object.h>
 #include <avm2/avm2_ops.h>
+#include <memory/heap.h>
 
 int avm2_class_qname_buf(const Avm2Class* cls, char* buf, int size)
 {
@@ -240,6 +241,12 @@ void avm2_vtable_append(Avm2Context* ctx, Avm2VTable* vt, const Avm2PropEntry* e
 		{
 			memcpy(grown, vt->entries, vt->count * sizeof(Avm2PropEntry));
 		}
+		// A per-call (no_index) vtable owns its arrays outright: it is never
+		// IC-cached and nothing holds an entry pointer while it is built, so
+		// the superseded array is freed. Shared class vtables keep the old
+		// one (ICs and bound-method nodes hold Avm2PropEntry* into it).
+		// Leaked 1-2 KB per call of every NEED_ACTIVATION method otherwise.
+		if (vt->no_index && vt->entries != NULL) heap_free(ctx->app, vt->entries);
 		vt->entries = grown;
 		vt->cap = new_cap;
 	}
@@ -580,6 +587,8 @@ static void vtable_set_slot_meta(Avm2Context* ctx, Avm2VTable* vt, uint32_t idx,
 		{
 			memcpy(grown, vt->metas, vt->meta_cap * sizeof(Avm2SlotMeta));
 		}
+		// Same ownership rule as avm2_vtable_append's entries growth.
+		if (vt->no_index && vt->metas != NULL) heap_free(ctx->app, vt->metas);
 		vt->metas = grown;
 		vt->meta_cap = new_cap;
 	}

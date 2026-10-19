@@ -356,6 +356,10 @@ typedef struct WebGPURenderContext
 	// (set by render_webgpu_set_blur_shift, consumed and cleared by run_blur).
 	int blur_shift_x;
 	int blur_shift_y;
+	// compose_pipeline twin for the 1-sample, stencil-less filter_tex_b target
+	// (sample count 1 by design): composes a non-final filter INTO the layer
+	// (then copied back to filter_tex_a) instead of the framebuffer.
+	WGPURenderPipeline compose_layer_pipeline;
 } WebGPURenderContext;
 
 // SWF fill-style byte for a bitmap fill, and the ONLY place a caller should
@@ -401,6 +405,9 @@ void render_webgpu_draw_rect(WebGPURenderContext* context, float x, float y, flo
 void render_webgpu_draw_tris(WebGPURenderContext* context, const float* xy_pairs, u32 vertex_count, float r, float g, float b, float a, u32 transform_id, u32 cxform_id);
 void render_webgpu_draw_gradient_tris(WebGPURenderContext* context, const float* xy_pairs, u32 vertex_count, u8 gradient_type, u8 spread_mode, u8 interpolation, float focal_ratio, const u8* gradient_ramp, const float* gradient_matrix, u32 transform_id, u32 cxform_id);
 void render_webgpu_draw_bitmap_quad(WebGPURenderContext* context, const uint32_t* argb_pixels, u32 bmp_width, u32 bmp_height, float x_twips, float y_twips, u32 transform_id, u32 cxform_id);
+// Raise the dynamic-source limit to fit (src_w x src_h); 0 when the device
+// cannot (logged once). See render_webgpu.c.
+int render_webgpu_fit_dynamic_bitmap(WebGPURenderContext* ctx, u32 src_w, u32 src_h);
 void render_webgpu_draw_bitmap_quad_scaled(WebGPURenderContext* context, const uint32_t* argb_pixels, u32 src_w, u32 src_h, u32 dst_w, u32 dst_h, float x_twips, float y_twips, u32 transform_id, u32 cxform_id);
 void render_webgpu_draw_bitmap_tris(WebGPURenderContext* context, const float* xy_pairs, u32 vertex_count, const uint32_t* argb_pixels, u32 src_w, u32 src_h, const float* user_matrix6, int repeat, int smooth, u32 transform_id, u32 cxform_id);
 void render_webgpu_begin_clip_mask(WebGPURenderContext* context);
@@ -442,6 +449,14 @@ void render_webgpu_snapshot_filter_source(WebGPURenderContext* context);
 // c2 = shadow, variant = 0 outer / 1 inner / 2 full). blur_off_* is a UV-space
 // offset added to the blurred sample (bevel also samples at -blur_off).
 void render_webgpu_compose_filter(WebGPURenderContext* context, int kind,
+	float blur_off_x, float blur_off_y,
+	float c1r, float c1g, float c1b, float c1a,
+	float c2r, float c2g, float c2b, float c2a,
+	float strength, int variant, int knockout, int composite_source);
+// Same as render_webgpu_compose_filter, but the result REPLACES filter_tex_a
+// (composed into filter_tex_b over transparent, then copied back), so the
+// next filter in a chain receives it. Main pass must be suspended.
+void render_webgpu_compose_filter_to_layer(WebGPURenderContext* context, int kind,
 	float blur_off_x, float blur_off_y,
 	float c1r, float c1g, float c1b, float c1a,
 	float c2r, float c2g, float c2b, float c2a,

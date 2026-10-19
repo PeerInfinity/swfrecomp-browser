@@ -139,12 +139,115 @@ static uint32_t wtf8_decode3(const unsigned char* p)
 	     | (uint32_t) (p[2] & 0x3F);
 }
 
+// --- append-in-place buffers (see avm2_value.h) -----------------------------
+//
+// AVM2_STRBUF_CENSUS=1 prints a hit census at exit (in-place appends, buffers
+// minted, plain copies of branches off a stale prefix, avm2_string_cstr copies
+// of stale prefixes).
+
+static int g_strbuf_census = -1;  // -1 = env not read yet
+static unsigned long long g_strbuf_appends = 0;
+static unsigned long long g_strbuf_new = 0;
+static unsigned long long g_strbuf_new_bytes = 0;
+static unsigned long long g_strbuf_cstr_copies = 0;
+static unsigned long long g_strbuf_branches = 0;
+
+static void strbuf_census_report(void)
+{
+	fprintf(stderr, "[avm2-strbuf] appends=%llu buffers=%llu buffer_bytes=%llu branch_copies=%llu cstr_copies=%llu\n",
+	        g_strbuf_appends, g_strbuf_new, g_strbuf_new_bytes, g_strbuf_branches,
+	        g_strbuf_cstr_copies);
+}
+
+static int strbuf_census_on(void)
+{
+	if (g_strbuf_census < 0)
+	{
+		const char* e = getenv("AVM2_STRBUF_CENSUS");
+		g_strbuf_census = (e != NULL && e[0] != '\0' && strcmp(e, "0") != 0);
+		if (g_strbuf_census) atexit(strbuf_census_report);
+	}
+	return g_strbuf_census;
+}
+
+static inline uint32_t strbuf_cap(const Avm2String* buf)
+{
+	return *(const uint32_t*) (const void*) (buf + 1);
+}
+
+// `a` (len >= 1) + `b` (len >= 1) through a buffer; NULL when `a` is a stale
+// prefix or the result is too large for one allocation (the caller falls back
+// to a plain copy).
+static const Avm2String* strbuf_append(Avm2Context* ctx, const Avm2String* a,
+                                       const Avm2String* b, uint32_t total)
+{
+	Avm2String* buf = NULL;
+	if ((a->gc_flags & AVM2_STR_GC_DEP))
+	{
+		// In place only when `a` IS the frontier: an older prefix must never
+		// see its tail rewritten (a second branch off it would clobber the
+		// first's bytes). A branch off a stale prefix (`x = base + i` in a
+		// loop) copies exactly instead of minting a 2x buffer per branch.
+		Avm2String* o = avm2_strbuf_owner(a);
+		if (o->len != a->len)
+		{
+			if (strbuf_census_on()) g_strbuf_branches++;
+			return NULL;
+		}
+		if ((uint64_t) total + 1 <= strbuf_cap(o)) buf = o;
+	}
+	if (buf == NULL)
+	{
+		uint64_t cap = (uint64_t) total * 2u + 1u;
+		if (sizeof(Avm2String) + AVM2_STRBUF_PREFIX + cap > 0xFFFFFFF0u) return NULL;
+		buf = avm2_alloc(ctx, (uint32_t) (sizeof(Avm2String) + AVM2_STRBUF_PREFIX + cap));
+		*(uint32_t*) (void*) (buf + 1) = (uint32_t) cap;
+		char* nb = (char*) (buf + 1) + AVM2_STRBUF_PREFIX;
+		memcpy(nb, a->utf8, a->len);
+		buf->len = a->len;
+		buf->utf8 = nb;
+		avm2_gc_enroll_string(buf);
+		buf->gc_flags |= AVM2_STR_GC_BUF;
+		if (strbuf_census_on()) { g_strbuf_new++; g_strbuf_new_bytes += cap; }
+	}
+	else if (strbuf_census_on())
+	{
+		g_strbuf_appends++;
+	}
+	char* bytes = (char*) buf->utf8;
+	memcpy(bytes + buf->len, b->utf8, b->len);
+	bytes[total] = '\0';
+	buf->len = total;
+	Avm2String* d = avm2_alloc(ctx, sizeof(Avm2String));
+	d->len = total;
+	d->utf8 = bytes;
+	avm2_gc_enroll_string(d);
+	d->gc_flags |= AVM2_STR_GC_DEP;
+	return d;
+}
+
+const char* avm2_string_cstr(Avm2Context* ctx, const Avm2String* s)
+{
+	if (s->utf8[s->len] == '\0') return s->utf8;
+	if (strbuf_census_on()) g_strbuf_cstr_copies++;
+	return avm2_string_new(ctx, s->utf8, s->len)->utf8;
+}
+
 const Avm2String* avm2_string_concat(Avm2Context* ctx, const Avm2String* a, const Avm2String* b)
 {
 	// WTF-8 seam: an unpaired high surrogate at the end of `a` followed by an
 	// unpaired low surrogate at the start of `b` re-forms one astral code
 	// point, shrinking the result by two bytes (3 + 3 -> 4).
 	bool join = wtf8_ends_with_high_surrogate(a) && wtf8_starts_with_low_surrogate(b);
+	// Long results append in place (a seam join rewrites a's tail, so it
+	// always copies).
+	if (!join && a->len > 0 && b->len > 0
+	    && (uint64_t) a->len + b->len >= AVM2_STRBUF_MIN_LEN
+	    && (uint64_t) a->len + b->len < 0x7FFFFFFFu)
+	{
+		const Avm2String* r = strbuf_append(ctx, a, b, a->len + b->len);
+		if (r != NULL) return r;
+	}
 	uint32_t total = a->len + b->len - (join ? 2u : 0u);
 	Avm2String* s = avm2_alloc(ctx, sizeof(Avm2String) + total + 1);
 	char* bytes = (char*) (s + 1);

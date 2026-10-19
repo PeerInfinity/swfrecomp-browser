@@ -3150,10 +3150,17 @@ static void run_goto(Avm2Context* ctx, Avm2Object* obj, uint16_t frame, int is_i
 	// steps (a removed handler during the goto reads the NEW currentFrame
 	// — movieclip_displayevents_timeline).
 	ext->current_frame = clamped;
-	ext->queued_script_frame = clamped;
-	if (ext->last_queued_script_frame != (int32_t) clamped)
+	// Ruffle run_goto: only a goto that HIT its target frame re-arms the
+	// frame script (run_frame_internal); gotoAndPlay(999) shows the last
+	// frame but its actions don't run (goto_queued_invalid/swf10). Flash
+	// still runs them in SWF<=9 (goto_queued_invalid/swf9; Ruffle KF there).
+	if (clamped == frame || ctx->swf_version <= 9)
 	{
-		ext->last_queued_script_frame = -1;
+		ext->queued_script_frame = clamped;
+		if (ext->last_queued_script_frame != (int32_t) clamped)
+		{
+			ext->last_queued_script_frame = -1;
+		}
 	}
 
 	if (is_rewind)
@@ -3733,6 +3740,9 @@ static void run_due_timers(Avm2Context* ctx)
 // exitFrame broadcast.
 static void avm2_loaderinfo_run_exit_frame(Avm2Context* ctx);
 static void avm2_loader_drain(Avm2Context* ctx);
+static void avm2_loader_run_exit_frame(Avm2Context* ctx);
+static void avm2_loader_resolve_fetches(Avm2Context* ctx);
+static int g_avm1_child_levels;   // defined with the AVM1 child boot below
 
 // Dual-VM (session 15): advances any AVM1 child movie's timeline. Defined
 // down with the loader, next to the boot that registers them; a no-op —
@@ -3747,9 +3757,16 @@ void avm2_display_run_tick(Avm2Context* ctx)
 {
 	if (ctx->stage == NULL) return;
 
+	// With an AVM1 child loaded, the tail of the tick follows Ruffle's
+	// player.rs::run_frame order (see below). Latched once per tick, so a child
+	// booted by THIS tick's drain does not switch the order mid-tick. Without
+	// one, the AVM1 tick (a no-op) stays here and the pure-AVM2 order is
+	// untouched.
+	int mixed_avm1 = g_avm1_child_levels != 0;
+
 	// Before the AVM2 phases, and therefore before this tick's loader drain:
 	// a child booted by tick N's drain must first advance on tick N+1.
-	avm1_child_tick(ctx);
+	if (!mixed_avm1) avm1_child_tick(ctx);
 
 	ctx->frame_phase = PHASE_ENTER;
 	for (uint32_t i = 0, snap = g_orphan_count;
@@ -3825,8 +3842,28 @@ void avm2_display_run_tick(Avm2Context* ctx)
 	// LocalConnections::update_connections: inside run_frame, after the AVM2
 	// phases and BEFORE the NetConnection flush below (avm2/amf_array_
 	// serialization traces its delivered message ahead of both remoting packets).
-	avm2_net_deliver_local_connections(ctx);
-	avm2_loader_drain(ctx);
+	if (mixed_avm1)
+	{
+		// Ruffle player.rs::run_frame: run_all_phases_avm2 (whose exit frame
+		// fires loader init/complete — LoadManager::run_exit_frame), THEN
+		// Avm1::run_frame, THEN LocalConnections::update_connections, then
+		// the executor resolves fetches. An AVM1 child's init/complete is
+		// gated on its first AVM1 frame having run (movie_clip.rs
+		// try_fire_loaderinfo_events, the INITIALIZED flag, which only
+		// run_frame_avm1 sets), hence loader_deliver's defer for it.
+		// mixed_avm/avm2_loads_avm1_events grades the order; _v9 / _v10 pin
+		// the LC position (their `complete` handler send()s, and with
+		// num_frames = 3 the delivery must land in the same tick).
+		avm2_loader_run_exit_frame(ctx);
+		avm1_child_tick(ctx);
+		avm2_net_deliver_local_connections(ctx);
+		avm2_loader_resolve_fetches(ctx);
+	}
+	else
+	{
+		avm2_net_deliver_local_connections(ctx);
+		avm2_loader_drain(ctx);
+	}
 	// NetConnection.call: the queued packet is sent and its scripted response
 	// dispatched at the same executor-drain point a Loader fetch resolves at, so
 	// the fetch log and the Responder callbacks follow the calling frame's traces
@@ -6276,11 +6313,17 @@ static void avm1_child_tick(Avm2Context* ctx)
 #define AVM1_CHILD_MOUSE_MOVE 0
 #define AVM1_CHILD_MOUSE_DOWN 1
 #define AVM1_CHILD_MOUSE_UP   2
+//
+// The last flag is whether the AVM2 pick for this event (update_mouse_state,
+// which always runs first) resolved to the AVM1 object: in Ruffle one pick
+// decides both VMs, so the AVM1 button state machine and AVM1 click focus act
+// only on a point the AVM2 walk handed to AVM1.
+static int g_last_pick_avm1;
 static void avm1_child_mouse(Avm2Context* ctx, int kind, float x, float y)
 {
 	if (g_avm1_child_levels == 0 || ctx == NULL || ctx->app == NULL) return;
-	extern void actionMouseAvm1ChildrenUnderAvm2(SWFAppContext*, int, float, float);
-	actionMouseAvm1ChildrenUnderAvm2(ctx->app, kind, x, y);
+	extern void actionMouseAvm1ChildrenUnderAvm2(SWFAppContext*, int, float, float, int);
+	actionMouseAvm1ChildrenUnderAvm2(ctx->app, kind, x, y, g_last_pick_avm1);
 }
 
 // An AVM1Movie's transform is the AVM1 root's transform (Ruffle keeps one
@@ -6346,14 +6389,14 @@ static void loader_deliver(Avm2Context* ctx, Avm2Object* li,
 
 	// Known content. An image is decoded here — Ruffle builds the Bitmap before
 	// it reports the final progress — and becomes the Loader's `content` and,
-	// per movie_loader_complete, its child at index 0. JPEG-XR deliberately
-	// gets no decode attempt: stb cannot read it, and loader_jpegxr /
-	// loader_jpegxr_alpha only ever trace `contentType`, so sniffing it must
-	// keep short-circuiting here rather than falling into a failed decode.
+	// per movie_loader_complete, its child at index 0. JPEG-XR decodes through
+	// jxrlib (avm2_jpegxr.c); without SWF_HAVE_LIBJXR it yields no Bitmap and
+	// `content` stays null, which is all loader_jpegxr's trace grades.
 	// A SWF's content still awaits an AVM2 child entry point (loader-arc.md
 	// tranche 6), so `content` stays null for it.
 	int is_image = (pl->content_type == LI_CT_PNG || pl->content_type == LI_CT_JPEG
-	                || pl->content_type == LI_CT_GIF);
+	                || pl->content_type == LI_CT_GIF
+	                || pl->content_type == LI_CT_JPEGXR);
 	// A child SWF's `bytes` and `parameters` are readable from the FINAL
 	// progress event onwards (loader_events reads bytes.length = 1490 and
 	// Parameters: (len=2) there), so they land before it — unlike the byte
@@ -6440,6 +6483,10 @@ static void loader_deliver(Avm2Context* ctx, Avm2Object* li,
 		// own recompiled AVM1 timeline boots behind it and ticks with the
 		// parent (avm1_child_boot / avm1_child_tick below).
 		avm1_child_boot(ctx, mov, pl->avm1_entry);
+		// Its init/complete wait for its first AVM1 frame (Ruffle's
+		// INITIALIZED gate): the next tick's exit-frame flush runs BEFORE
+		// that frame (avm2_display_run_tick's mixed order), so hold one more.
+		lx->defer_flushes = 1;
 	}
 	// Third `bytes` state: the real source bytes, now that content is loaded.
 	// Only bundled assets are kept — their storage is generated-static and
@@ -6565,6 +6612,13 @@ static uint32_t g_pending_url_load_count;
 static void avm2_loader_drain(Avm2Context* ctx)
 {
 	avm2_loader_run_exit_frame(ctx);
+	avm2_loader_resolve_fetches(ctx);
+}
+
+// Stage 2 of the drain alone (avm2_display_run_tick's mixed AVM1 order runs
+// the AVM1 tick and LocalConnection delivery between the two stages).
+static void avm2_loader_resolve_fetches(Avm2Context* ctx)
+{
 	for (uint32_t round = 0; round < AVM2_MAX_LOAD_CHAIN; round++)
 	{
 		// The queued fetch log belongs to THIS round's requests: Ruffle logs
@@ -8011,6 +8065,9 @@ static void mc_goto_with_args(Avm2Activation* act, int stop)
 	// Integers demote to Number and take the string path.
 	int32_t frame = 1;
 	Avm2Value arg = act->args[0];
+	// `frame:Object` — coercing undefined to Object yields null, so the
+	// label path sees "null" (goto_queued_invalid/swf11 #2109 message).
+	if (arg.kind == AVM2_VALUE_UNDEFINED) arg = avm2_null();
 	int use_int_path = 0;
 	int32_t int_val = 0;
 	if (arg.kind == AVM2_VALUE_INTEGER)
@@ -8092,6 +8149,10 @@ static void mc_goto_with_args(Avm2Activation* act, int stop)
 			}
 		}
 	}
+	// Ruffle e092c78c2: frame zero (and every invalid value coerced into
+	// it) NOOPs a goto issued while this clip runs a frame script — the
+	// clip neither jumps to frame 1 nor stops/plays.
+	if (frame == 0 && ext->executing_frame_script) return;
 	if (!stop) mc_set_programmatically_played(ext);
 	if (frame < 1) frame = 1;
 	// TRUNCATING u16 cast (Ruffle `frame.max(1) as u16`).
@@ -8245,7 +8306,9 @@ static Avm2Value mc_add_frame_script(Avm2Activation* act)
 static Avm2Class* g_graphics_class;
 
 // T4 Part B — runtime Graphics geometry recording. One recorded pen command
-// (pixels; cx/cy = quadratic control for CURVE). type: 0 move, 1 line, 2 curve.
+// (pixels; cx/cy = quadratic control for CURVE). type: 0 move, 1 line, 2 curve,
+// 3 = one quadratic of a cubic's lyon approximation (unquantized, flattened at
+// 0.8 * tol; see gfx_add_cubic).
 typedef struct { uint8_t type; float x, y, cx, cy; } Avm2GfxCmd;
 
 // A non-solid STROKE style. Ruffle models a stroke as a fill applied to the
@@ -8544,7 +8607,7 @@ static uint32_t gfx_arc_segments(float radius_tw, float sweep_abs)
 // Upper bound on vertices one join OR one cap can write at this half-width.
 static uint32_t gfx_stroke_extra_verts(float half_w, uint8_t joints, uint8_t caps)
 {
-	uint32_t n = 6;
+	uint32_t n = 9;
 	if (joints == 0)
 	{
 		uint32_t j = 3u * gfx_arc_segments(half_w, (float) M_PI);
@@ -8658,12 +8721,32 @@ static uint32_t gfx_stroke_join(float* out, float ax, float ay, float vx,
 	if (joints == 1 && mlen > 1e-4f && miter_limit >= 1.0f)
 	{
 		float mhx = mx / mlen, mhy = my / mlen, cos_half = mhx * o0x + mhy * o0y;
-		if (cos_half * miter_limit > 1.0f)
+		// lyon MiterClip semantics (Ruffle's miter joint): keep the full miter
+		// while |m| = 1/cos_half <= 2*limit, else clip the tip at
+		// limit*0.5*half_w along the bisector. See the action.c twin
+		// drawing_emit_stroke_join for the lyon stroke.rs references.
+		if (cos_half > 1e-6f && 1.0f <= 4.0f * miter_limit * miter_limit * cos_half * cos_half)
 		{
 			float ml = half_w / cos_half, Mx = vx + mhx * ml, My = vy + mhy * ml;
 			out[0]=vx; out[1]=vy; out[2]=p0x; out[3]=p0y; out[4]=Mx; out[5]=My;
 			out[6]=vx; out[7]=vy; out[8]=Mx; out[9]=My; out[10]=p1x; out[11]=p1y;
 			return 6;
+		}
+		else
+		{
+			float dclip = miter_limit * 0.5f * half_w, base = half_w * cos_half;
+			float t0x = -o0y, t0y = o0x, t1x = -o1y, t1y = o1x;
+			float k0 = t0x * mhx + t0y * mhy, k1 = t1x * mhx + t1y * mhy;
+			if (fabsf(k0) > 1e-6f && fabsf(k1) > 1e-6f)
+			{
+				float s0 = (dclip - base) / k0, s1 = (dclip - base) / k1;
+				float c0x = p0x + t0x * s0, c0y = p0y + t0y * s0;
+				float c1x = p1x + t1x * s1, c1y = p1y + t1y * s1;
+				out[0]=vx; out[1]=vy; out[2]=p0x; out[3]=p0y; out[4]=c0x; out[5]=c0y;
+				out[6]=vx; out[7]=vy; out[8]=c0x; out[9]=c0y; out[10]=c1x; out[11]=c1y;
+				out[12]=vx; out[13]=vy; out[14]=c1x; out[15]=c1y; out[16]=p1x; out[17]=p1y;
+				return 9;
+			}
 		}
 	}
 	out[0]=vx; out[1]=vy; out[2]=p0x; out[3]=p0y; out[4]=p1x; out[5]=p1y;
@@ -8770,7 +8853,7 @@ static void gfx_flatten_cmds(const Avm2GraphicsExt* g, uint32_t from, uint32_t t
 	{
 		Avm2GfxCmd* c = &g->cmds[i];
 		if (c->type == 0) { _GADDC(); _GADDP(c->x, c->y); }
-		else if (c->type == 2)
+		else if (c->type == 2 || c->type == 3)
 		{
 			float sx = (i > 0) ? g->cmds[i-1].x : 0.0f;
 			float sy = (i > 0) ? g->cmds[i-1].y : 0.0f;
@@ -8781,8 +8864,12 @@ static void gfx_flatten_cmds(const Avm2GraphicsExt* g, uint32_t from, uint32_t t
 			// since chords are inscribed in the *quadratic* (which for a
 			// drawCircle arc bulges outside the true circle) that made our
 			// filled polygon systematically WIDER than Ruffle's.
+			// Type 3 (cubic-derived) quadratics use lyon's cubic flattening
+			// tolerance, 0.8 * tol.
+			float ftol = c->type == 3 ? CURVE_FLATTEN_TOLERANCE * 0.8f
+			                          : CURVE_FLATTEN_TOLERANCE;
 			CurveFlatten cf_ = curve_flatten_init(sx, sy, c->cx, c->cy,
-			                                      c->x, c->y, CURVE_FLATTEN_TOLERANCE);
+			                                      c->x, c->y, ftol);
 			for (int s = 1; s < cf_.count; s++)
 			{
 				float t = curve_flatten_t(&cf_, s), u = 1.0f - t;
@@ -9545,6 +9632,18 @@ static const double GFX_UCP[5][2] = {
 	{ 0.00000000000000006123233995736766, 1.0 },
 };
 
+// A round-rect side that the radii ate whole (every side of a drawCircle /
+// drawEllipse) is a zero-length LineTo. Skip it so the stroker never sees a
+// degenerate segment: lyon drops zero-length edges, and a degenerate edge in
+// our stroker grows spurious joins (avm2/graphics_bitmaps).
+static void gfx_add_side(Avm2GraphicsExt* g, double x, double y)
+{
+	if (g->pen_set && (float) gfx_quantize_twips(x) == g->pen_x
+	    && (float) gfx_quantize_twips(y) == g->pen_y)
+		return;
+	gfx_add_cmd(g, 1, x, y, 0, 0);
+}
+
 // Port of Ruffle `draw_round_rect_internal`. Four independent corner ellipses,
 // each radius clamped to half the corresponding side, traced from the MIDDLE of
 // the bottom-right ellipse (that is where Flash Player starts) anticlockwise
@@ -9577,28 +9676,28 @@ static void gfx_emit_round_rect(Avm2GraphicsExt* g, double x, double y,
 	gfx_add_cmd(g, 2, brcx + brw * GFX_UCP[4][0], brcy + brh * GFX_UCP[4][1],
 	                  brcx + brw * GFX_UCP[3][0], brcy + brh * GFX_UCP[3][1]);
 	// Bottom side.
-	gfx_add_cmd(g, 1, blcx - blw * GFX_UCP[4][0], blcy + blh * GFX_UCP[4][1], 0, 0);
+	gfx_add_side(g, blcx - blw * GFX_UCP[4][0], blcy + blh * GFX_UCP[4][1]);
 	// Bottom-left ellipse.
 	gfx_add_cmd(g, 2, blcx - blw * GFX_UCP[2][0], blcy + blh * GFX_UCP[2][1],
 	                  blcx - blw * GFX_UCP[3][0], blcy + blh * GFX_UCP[3][1]);
 	gfx_add_cmd(g, 2, blcx - blw * GFX_UCP[0][0], blcy + blh * GFX_UCP[0][1],
 	                  blcx - blw * GFX_UCP[1][0], blcy + blh * GFX_UCP[1][1]);
 	// Left side.
-	gfx_add_cmd(g, 1, tlcx - tlw * GFX_UCP[0][0], tlcy - tlh * GFX_UCP[0][1], 0, 0);
+	gfx_add_side(g, tlcx - tlw * GFX_UCP[0][0], tlcy - tlh * GFX_UCP[0][1]);
 	// Top-left ellipse.
 	gfx_add_cmd(g, 2, tlcx - tlw * GFX_UCP[2][0], tlcy - tlh * GFX_UCP[2][1],
 	                  tlcx - tlw * GFX_UCP[1][0], tlcy - tlh * GFX_UCP[1][1]);
 	gfx_add_cmd(g, 2, tlcx - tlw * GFX_UCP[4][0], tlcy - tlh * GFX_UCP[4][1],
 	                  tlcx - tlw * GFX_UCP[3][0], tlcy - tlh * GFX_UCP[3][1]);
 	// Top side.
-	gfx_add_cmd(g, 1, trcx + trw * GFX_UCP[4][0], trcy - trh * GFX_UCP[4][1], 0, 0);
+	gfx_add_side(g, trcx + trw * GFX_UCP[4][0], trcy - trh * GFX_UCP[4][1]);
 	// Top-right ellipse.
 	gfx_add_cmd(g, 2, trcx + trw * GFX_UCP[2][0], trcy - trh * GFX_UCP[2][1],
 	                  trcx + trw * GFX_UCP[3][0], trcy - trh * GFX_UCP[3][1]);
 	gfx_add_cmd(g, 2, trcx + trw * GFX_UCP[0][0], trcy - trh * GFX_UCP[0][1],
 	                  trcx + trw * GFX_UCP[1][0], trcy - trh * GFX_UCP[1][1]);
 	// Right side, then the other half of the bottom-right ellipse.
-	gfx_add_cmd(g, 1, brcx + brw * GFX_UCP[0][0], brcy + brh * GFX_UCP[0][1], 0, 0);
+	gfx_add_side(g, brcx + brw * GFX_UCP[0][0], brcy + brh * GFX_UCP[0][1]);
 	gfx_add_cmd(g, 2, br_x, br_y,
 	                  brcx + brw * GFX_UCP[1][0], brcy + brh * GFX_UCP[1][1]);
 }
@@ -9681,11 +9780,69 @@ static Avm2Value gfx_draw_round_rect_complex(Avm2Activation* act)
 	return avm2_undefined();
 }
 
+// Port of lyon_geom 1.0.6 `CubicBezierSegment::for_each_flattened_with_t`,
+// which is how Ruffle's tessellator flattens a drawing-API cubic. Ruffle keeps
+// the cubic itself (anchors and controls twip-truncated like every pen
+// command); lyon splits it into num_quadratics(0.4 * tol) equal-t sub-cubics
+// (`split_range`), turns each into one quadratic (`to_quadratic`) and flattens
+// that at 0.8 * tol. The derived quadratics are NOT re-quantized to twips, so
+// they are recorded as cmd type 3, which gfx_flatten_cmds flattens at the
+// 0.8 * tol. All arithmetic is f32 in lyon's operation order.
+static void gfx_add_cubic(Avm2GraphicsExt* g, double c1x, double c1y, double c2x,
+                          double c2y, double ax, double ay)
+{
+	float f0x = g->pen_x, f0y = g->pen_y;
+	float f1x = (float) gfx_quantize_twips(c1x), f1y = (float) gfx_quantize_twips(c1y);
+	float f2x = (float) gfx_quantize_twips(c2x), f2y = (float) gfx_quantize_twips(c2y);
+	float f3x = (float) gfx_quantize_twips(ax), f3y = (float) gfx_quantize_twips(ay);
+	// num_quadratics_impl(0.4 * tol).
+	float ex = f0x - 3.0f * f1x + 3.0f * f2x - f3x;
+	float ey = f0y - 3.0f * f1y + 3.0f * f2y - f3y;
+	float qtol = CURVE_FLATTEN_TOLERANCE * 0.4f;
+	float nq = ceilf(powf((ex * ex + ey * ey) / (432.0f * qtol * qtol), 1.0f / 6.0f));
+	if (!(nq >= 1.0f)) nq = 1.0f;           // lyon's max(1); also catches NaN
+	if (nq > 1024.0f) nq = 1024.0f;         // non-finite input guard
+	uint32_t n = (uint32_t) nq;
+	float step = 1.0f / nq, t0 = 0.0f;
+	// Derivative hull for split_range: d = (C1 - P0, C2 - C1, P3 - C2).
+	float d0x = f1x - f0x, d0y = f1y - f0y;
+	float d1x = f2x - f1x, d1y = f2y - f1y;
+	float d2x = f3x - f2x, d2y = f3y - f2y;
+	#define GFX_CUB(t, a, b, c, d) ((a) * ((1.0f - (t)) * (1.0f - (t)) * (1.0f - (t))) \
+		+ (b) * 3.0f * ((1.0f - (t)) * (1.0f - (t))) * (t) \
+		+ (c) * 3.0f * (1.0f - (t)) * ((t) * (t)) + (d) * ((t) * (t) * (t)))
+	#define GFX_QUAD(t, a, b, c) ((a) * ((1.0f - (t)) * (1.0f - (t))) \
+		+ (b) * 2.0f * (1.0f - (t)) * (t) + (c) * ((t) * (t)))
+	for (uint32_t i = 0; i < n; i++)
+	{
+		// The last step ends at t = 1 exactly, as in lyon.
+		float t1 = (i + 1 == n) ? 1.0f : t0 + step, dt = t1 - t0;
+		float sx = GFX_CUB(t0, f0x, f1x, f2x, f3x), sy = GFX_CUB(t0, f0y, f1y, f2y, f3y);
+		float ex1 = GFX_CUB(t1, f0x, f1x, f2x, f3x), ey1 = GFX_CUB(t1, f0y, f1y, f2y, f3y);
+		float k1x = sx + GFX_QUAD(t0, d0x, d1x, d2x) * dt;
+		float k1y = sy + GFX_QUAD(t0, d0y, d1y, d2y) * dt;
+		float k2x = ex1 - GFX_QUAD(t1, d0x, d1x, d2x) * dt;
+		float k2y = ey1 - GFX_QUAD(t1, d0y, d1y, d2y) * dt;
+		// to_quadratic: ctrl = ((3*C1 - P0)/2 + (3*C2 - P3)/2) / 2.
+		float qcx = ((k1x * 3.0f - sx) * 0.5f + (k2x * 3.0f - ex1) * 0.5f) * 0.5f;
+		float qcy = ((k1y * 3.0f - sy) * 0.5f + (k2y * 3.0f - ey1) * 0.5f) * 0.5f;
+		if (g->cmd_count >= g->cmd_cap)
+		{
+			g->cmd_cap = g->cmd_cap ? g->cmd_cap * 2 : 64;
+			g->cmds = realloc(g->cmds, g->cmd_cap * sizeof(Avm2GfxCmd));
+		}
+		Avm2GfxCmd* c = &g->cmds[g->cmd_count++];
+		c->type = 3; c->x = ex1; c->y = ey1; c->cx = qcx; c->cy = qcy;
+		g->pen_x = ex1; g->pen_y = ey1; g->pen_set = 1;
+		t0 = t1;
+	}
+	#undef GFX_CUB
+	#undef GFX_QUAD
+}
+
 // cubicCurveTo(c1x, c1y, c2x, c2y, ax, ay). Our command stream carries
-// quadratics only (that is what the SWF shape record has), so the cubic is
-// split into 8 sub-curves by de Casteljau and each is replaced by its
-// least-squares quadratic (control = (3*C1 - P0 + 3*C2 - P3)/4). At 8 segments
-// the deviation is far below a twip for any on-screen curve.
+// quadratics only, so the cubic is recorded as lyon's own quadratic
+// approximation (gfx_add_cubic), which is what Ruffle's tessellator flattens.
 static Avm2Value gfx_cubic_curve_to(Avm2Activation* act)
 {
 	Avm2DisplayObjectExt* ext = graphics_owner_ext(act);
@@ -9706,34 +9863,16 @@ static Avm2Value gfx_cubic_curve_to(Avm2Activation* act)
 	}
 	if (g == NULL) return avm2_undefined();
 	if (!g->pen_set) gfx_add_cmd(g, 0, 0, 0, 0, 0);
-	double p0x = g->pen_x, p0y = g->pen_y;
-	const int N = 8;
-	for (int i = 0; i < N; i++)
-	{
-		double t0 = (double) i / N, t1 = (double)(i + 1) / N;
-		// Cubic point + derivative-scaled control points on [t0, t1].
-		#define CUB(t, a, b, c, d) ((1 - (t)) * (1 - (t)) * (1 - (t)) * (a) \
-			+ 3 * (1 - (t)) * (1 - (t)) * (t) * (b) \
-			+ 3 * (1 - (t)) * (t) * (t) * (c) + (t) * (t) * (t) * (d))
-		#define DER(t, a, b, c, d) (3 * (1 - (t)) * (1 - (t)) * ((b) - (a)) \
-			+ 6 * (1 - (t)) * (t) * ((c) - (b)) + 3 * (t) * (t) * ((d) - (c)))
-		double dt = t1 - t0;
-		double sx = CUB(t0, p0x, c1x, c2x, ax), sy = CUB(t0, p0y, c1y, c2y, ay);
-		double ex = CUB(t1, p0x, c1x, c2x, ax), ey = CUB(t1, p0y, c1y, c2y, ay);
-		double b1x = sx + DER(t0, p0x, c1x, c2x, ax) * dt / 3.0;
-		double b1y = sy + DER(t0, p0y, c1y, c2y, ay) * dt / 3.0;
-		double b2x = ex - DER(t1, p0x, c1x, c2x, ax) * dt / 3.0;
-		double b2y = ey - DER(t1, p0y, c1y, c2y, ay) * dt / 3.0;
-		#undef CUB
-		#undef DER
-		double qx = (3 * b1x - sx + 3 * b2x - ex) * 0.25;
-		double qy = (3 * b1y - sy + 3 * b2y - ey) * 0.25;
-		gfx_add_cmd(g, 2, ex, ey, qx, qy);
-	}
+	gfx_add_cubic(g, c1x, c1y, c2x, c2y, ax, ay);
 	return avm2_undefined();
 }
 
-// drawCircle(x, y, r) / drawEllipse via 4 cubic-equivalent quadratic arcs.
+// drawCircle(x, y, r). Like Ruffle (graphics.rs draw_circle / draw_ellipse),
+// drawCircle and drawEllipse are round rects whose radii eat every side, so
+// they share gfx_emit_round_rect's anchor order and Ruffle's hard-coded
+// unit-circle constants. Computing anchors with cos()/sin() instead put the
+// top anchor at r*cos(3pi/2) = -1.8e-16 below the exact value, and the twip
+// truncation then dropped it a whole twip (from_shumway/MaskTest).
 static Avm2Value gfx_draw_circle(Avm2Activation* act)
 {
 	Avm2DisplayObjectExt* ext = graphics_owner_ext(act);
@@ -9745,21 +9884,7 @@ static Avm2Value gfx_draw_circle(Avm2Activation* act)
 		double r = avm2_coerce_to_number(act->ctx, act->args[2]);
 		if (ext != NULL) { draw_union_stroke(ext, g, x - r, y - r); draw_union_stroke(ext, g, x + r, y + r); }
 		if (g != NULL)
-		{
-			// 8 quadratic segments approximating the circle (control point at
-			// tan(pi/8) out along the bisector). Good to <0.1% radius.
-			const int N = 8;
-			double kct = 1.0 / cos(M_PI / N);   // control radius factor
-			gfx_add_cmd(g, 0, x + r, y, 0, 0);
-			for (int i = 0; i < N; i++)
-			{
-				double a0 = 2.0 * M_PI * i / N, a1 = 2.0 * M_PI * (i + 1) / N;
-				double am = (a0 + a1) * 0.5;
-				double ex = x + r * cos(a1), ey = y + r * sin(a1);
-				double cxp = x + r * kct * cos(am), cyp = y + r * kct * sin(am);
-				gfx_add_cmd(g, 2, ex, ey, cxp, cyp);
-			}
-		}
+			gfx_emit_round_rect(g, x - r, y - r, r * 2.0, r * 2.0, r, r, r, r, r, r, r, r);
 	}
 	return avm2_undefined();
 }
@@ -9781,18 +9906,7 @@ static Avm2Value gfx_draw_ellipse(Avm2Activation* act)
 		draw_union_stroke(ext, g, x + w, y + h);
 	}
 	if (g == NULL) return avm2_undefined();
-	double rx = w * 0.5, ry = h * 0.5, cx = x + rx, cy = y + ry;
-	const int N = 8;
-	double kct = 1.0 / cos(M_PI / N);
-	gfx_add_cmd(g, 0, cx + rx, cy, 0, 0);
-	for (int i = 0; i < N; i++)
-	{
-		double a0 = 2.0 * M_PI * i / N, a1 = 2.0 * M_PI * (i + 1) / N;
-		double am = (a0 + a1) * 0.5;
-		double ex = cx + rx * cos(a1), ey = cy + ry * sin(a1);
-		double ccx = cx + rx * kct * cos(am), ccy = cy + ry * kct * sin(am);
-		gfx_add_cmd(g, 2, ex, ey, ccx, ccy);
-	}
+	gfx_emit_round_rect(g, x, y, w, h, w / 2.0, h / 2.0, w / 2.0, h / 2.0, w / 2.0, h / 2.0, w / 2.0, h / 2.0);
 	return avm2_undefined();
 }
 
@@ -10033,6 +10147,25 @@ static Avm2Value video_noop(Avm2Activation* act)
 	return avm2_undefined();
 }
 
+// Set once any Video has had a NetStream attached, so the render walk skips
+// the per-node Video lookup in every movie that never does.
+static uint8_t g_video_netstream_attached;
+
+// attachNetStream(netStream:NetStream) -> Ruffle video.rs attach_netstream:
+// the Video now shows the stream's last decoded frame. The stream is kept on
+// the Video itself (a hidden slot, which also keeps it alive for the GC);
+// null detaches, and the Video draws nothing again.
+static Avm2Value video_attach_net_stream(Avm2Activation* act)
+{
+	Avm2Object* self = this_obj(act);
+	if (self == NULL) return avm2_undefined();
+	Avm2Value ns = act->argc > 0 ? act->args[0] : avm2_null();
+	if (ns.kind != AVM2_VALUE_OBJECT) ns = avm2_null();
+	avm2_object_set_dynamic(act->ctx, self, "_netStream", 10, ns)->dont_enum = 1;
+	if (ns.kind == AVM2_VALUE_OBJECT) g_video_netstream_attached = 1;
+	return avm2_undefined();
+}
+
 static Avm2Value do_get_graphics(Avm2Activation* act)
 {
 	Avm2Context* ctx = act->ctx;
@@ -10261,18 +10394,11 @@ static void gfx_decode_path(Avm2GraphicsExt* g, Avm2Context* ctx,
 				gfx_add_cmd(g, 2, x, y, cx, cy); break;
 			case 4: di += 2; _GRDPT(x, y); gfx_add_cmd(g, 0, x, y, 0, 0); break;
 			case 5: di += 2; _GRDPT(x, y); gfx_add_cmd(g, 1, x, y, 0, 0); break;
-			case 6:                                         // CUBIC -> flatten
+			case 6:                                         // CUBIC (lyon)
 			{
-				double sx = g->pen_set ? g->pen_x : 0, sy = g->pen_set ? g->pen_y : 0;
 				_GRDPT(cx, cy); _GRDPT(c2x, c2y); _GRDPT(x, y);
-				const int N = 16;
-				for (int s = 1; s <= N; s++)
-				{
-					double t = (double) s / N, u = 1 - t;
-					double bx = u*u*u*sx + 3*u*u*t*cx + 3*u*t*t*c2x + t*t*t*x;
-					double by = u*u*u*sy + 3*u*u*t*cy + 3*u*t*t*c2y + t*t*t*y;
-					gfx_add_cmd(g, 1, bx, by, 0, 0);
-				}
+				if (!g->pen_set) gfx_add_cmd(g, 0, 0, 0, 0, 0);
+				gfx_add_cubic(g, cx, cy, c2x, c2y, x, y);
 				break;
 			}
 			default: return;                                // unknown -> stop
@@ -11682,6 +11808,8 @@ static void m3d_tz_set(Avm2Context* ctx, Avm2Object* target, double tz)
 	if (target == NULL) return;
 	avm2_object_set_dynamic(ctx, target, M3D_TZ_KEY, 5, avm2_number(tz))
 		->dont_enum = 1;
+	Avm2DisplayObjectExt* ext = avm2_display_ext_of(ctx, target);
+	if (ext != NULL) ext->render_tz = tz;
 }
 
 // flash.geom.Matrix3D is minted in avm2_stage3d.c (Stage3D needs it first).
@@ -13648,14 +13776,49 @@ static Avm2Value stage_set_stage_focus_rect(Avm2Activation* act)
 	return avm2_undefined();
 }
 
+// Stage.scaleMode / Stage.align (w2-avm2-stage-view). Ruffle stores both on
+// the Stage and rebuilds its view matrix on every set (display_object/
+// stage.rs set_scale_mode / set_align -> build_matrices); the render side is
+// avm2_stage_view_apply below the render gate. align is a bitflag set parsed
+// char-by-char (stage.rs FromWStr for StageAlign: any T/B/L/R, case-folded,
+// everything else ignored) and read back in AVM2 order T,B,L,R
+// (globals/flash/display/stage.rs get_align).
+enum { AVM2_SCALE_SHOW_ALL = 0, AVM2_SCALE_EXACT_FIT, AVM2_SCALE_NO_BORDER, AVM2_SCALE_NO_SCALE };
+enum { AVM2_ALIGN_T = 1, AVM2_ALIGN_B = 2, AVM2_ALIGN_L = 4, AVM2_ALIGN_R = 8 };
+static int g_stage_scale_mode = AVM2_SCALE_SHOW_ALL;
+static int g_stage_align = 0;
+static void avm2_stage_view_apply(Avm2Context* ctx);
+
 static Avm2Value stage_get_align(Avm2Activation* act)
 {
-	return avm2_string(avm2_string_from_literal(act->ctx, ""));
+	char buf[5];
+	int n = 0;
+	if (g_stage_align & AVM2_ALIGN_T) buf[n++] = 'T';
+	if (g_stage_align & AVM2_ALIGN_B) buf[n++] = 'B';
+	if (g_stage_align & AVM2_ALIGN_L) buf[n++] = 'L';
+	if (g_stage_align & AVM2_ALIGN_R) buf[n++] = 'R';
+	buf[n] = '\0';
+	return avm2_string(avm2_string_new(act->ctx, buf, (uint32_t) n));
 }
 
 static Avm2Value stage_set_align(Avm2Activation* act)
 {
-	(void) act;
+	if (act->argc < 1) return avm2_undefined();
+	const Avm2String* s = avm2_coerce_to_string(act->ctx, act->args[0]);
+	int align = 0;
+	for (uint32_t i = 0; s != NULL && i < s->len; i++)
+	{
+		switch (s->utf8[i])
+		{
+			case 'T': case 't': align |= AVM2_ALIGN_T; break;
+			case 'B': case 'b': align |= AVM2_ALIGN_B; break;
+			case 'L': case 'l': align |= AVM2_ALIGN_L; break;
+			case 'R': case 'r': align |= AVM2_ALIGN_R; break;
+			default: break;
+		}
+	}
+	g_stage_align = align;
+	avm2_stage_view_apply(act->ctx);
 	return avm2_undefined();
 }
 
@@ -13709,12 +13872,36 @@ static Avm2Value stage_set_color_correction(Avm2Activation* act)
 
 static Avm2Value stage_get_scale_mode(Avm2Activation* act)
 {
-	return avm2_string(avm2_string_from_literal(act->ctx, "showAll"));
+	static const char* const names[] = { "showAll", "exactFit", "noBorder", "noScale" };
+	return avm2_string(avm2_string_from_literal(act->ctx, names[g_stage_scale_mode]));
 }
 
+// Case-insensitive match (stage.rs FromWStr for StageScaleMode). Ruffle throws
+// ArgumentError #2008 on anything else; we keep the previous mode silently
+// (no corpus test sets an invalid mode).
 static Avm2Value stage_set_scale_mode(Avm2Activation* act)
 {
-	(void) act;
+	if (act->argc < 1) return avm2_undefined();
+	const Avm2String* s = avm2_coerce_to_string(act->ctx, act->args[0]);
+	static const char* const names[] = { "showall", "exactfit", "noborder", "noscale" };
+	for (int m = 0; s != NULL && m < 4; m++)
+	{
+		size_t len = strlen(names[m]);
+		if (s->len != len) continue;
+		uint32_t i = 0;
+		for (; i < len; i++)
+		{
+			char c = s->utf8[i];
+			if (c >= 'A' && c <= 'Z') c = (char) (c - 'A' + 'a');
+			if (c != names[m][i]) break;
+		}
+		if (i == len)
+		{
+			g_stage_scale_mode = m;
+			avm2_stage_view_apply(act->ctx);
+			break;
+		}
+	}
 	return avm2_undefined();
 }
 
@@ -14809,6 +14996,24 @@ static int hit_test_shape_obj(Avm2Context* ctx, Avm2Object* obj,
 	return point_in_self(ctx, obj, px, py);
 }
 
+// Ruffle DisplayObject::global_in_scroll_rect: a COMMITTED scrollRect clips
+// mouse picking to its viewport. The rect is in the object's scrolled local
+// space, i.e. through local_to_global (which carries the object's own scroll
+// translate). No rect = no clip; a singular matrix = outside; the rect test is
+// inclusive on all four edges (Rectangle::contains). Point in stage twips.
+static int pk_in_scroll_rect(Avm2Context* ctx, Avm2Object* obj,
+                             Avm2DisplayObjectExt* ext, double px, double py)
+{
+	if (!ext->sr_committed) return 1;
+	Mat m = display_l2g_matrix(ctx, obj);
+	if (m.a * m.d - m.b * m.c == 0.0) return 0;
+	Mat inv = mat_invert(&m);
+	double lx = inv.a * px + inv.c * py + inv.tx;
+	double ly = inv.b * px + inv.d * py + inv.ty;
+	return lx >= ext->csr_xmin && lx <= ext->csr_xmax
+	       && ly >= ext->csr_ymin && ly <= ext->csr_ymax;
+}
+
 typedef enum { PK_MISS, PK_PROP, PK_HIT } PkKind;
 typedef struct { PkKind kind; Avm2Object* target; } Pk;
 
@@ -14838,7 +15043,7 @@ static int pk_is_movie_root(Avm2Context* ctx, Avm2Object* o)
 #define AVM1_CHILD_PICK_MISS    0
 #define AVM1_CHILD_PICK_CONTENT 1
 #define AVM1_CHILD_PICK_BUTTON  2
-extern int actionAvm1ChildMousePick(float x, float y);
+extern int actionAvm1ChildMousePick(SWFAppContext* app_context, float x, float y);
 
 // The pick target that stands for "an AVM1 display object". It is deliberately
 // NOT a usable Avm2Object: an AVM1 hit means the AVM2 side dispatches nothing
@@ -14903,6 +15108,8 @@ static Pk mouse_pick(Avm2Context* ctx, Avm2Object* obj, double px, double py)
 	if (obj->cls != NULL
 	    && class_is_a(obj->cls, ctx->builtins.simple_button_class))
 	{
+		if (!pk_in_scroll_rect(ctx, obj, ext, px, py))
+			return pk_make(PK_MISS, NULL);
 		Avm2Object* hit = ext->btn_hit != NULL ? ext->btn_hit : ext->btn_up;
 		Avm2DisplayObjectExt* hext = hit != NULL
 			? avm2_display_ext_of(ctx, hit) : NULL;
@@ -14944,6 +15151,12 @@ static Pk mouse_pick(Avm2Context* ctx, Avm2Object* obj, double px, double py)
 		return pk_make(PK_MISS, NULL);
 	}
 
+	// movie_clip.rs / loader_display.rs mouse_pick_avm2: outside a committed
+	// scrollRect nothing below this container is pickable (EditText, above,
+	// is not gated — matching Ruffle).
+	if (!ext->is_stage && !pk_in_scroll_rect(ctx, obj, ext, px, py))
+		return pk_make(PK_MISS, NULL);
+
 	Pk found_prop = pk_make(PK_MISS, NULL);
 	// Timeline clip layers: every child with clip_depth > 0 masks the depth
 	// range (depth+1 ..= clip_depth). Ruffle walks them as a single reversed,
@@ -14975,7 +15188,7 @@ static Pk mouse_pick(Avm2Context* ctx, Avm2Object* obj, double px, double py)
 				// answers first, and only if it finds nothing interactive does
 				// the container absorb the hit as its own (`child
 				// .hit_test_shape() -> Hit(self)`).
-				int a = actionAvm1ChildMousePick((float) (px / 20.0),
+				int a = actionAvm1ChildMousePick(ctx->app, (float) (px / 20.0),
 				                                 (float) (py / 20.0));
 				if (a == AVM1_CHILD_PICK_BUTTON)
 				{
@@ -15451,7 +15664,7 @@ static void avm2_dbg_pick_label(Avm2Context* ctx, const char* tag, Avm2Object* o
 	const char* cn = (o->cls != NULL && o->cls->name.name != NULL)
 		? o->cls->name.name : "?";
 	const char* nm = (ext != NULL && ext->name != NULL && ext->name->utf8 != NULL)
-		? ext->name->utf8 : "(anon)";
+		? avm2_string_cstr(ctx, ext->name) : "(anon)";
 	fprintf(stderr, "MPICK %s = %s '%s' me=%d\n", tag, cn, nm,
 		ext != NULL ? ext->mouse_enabled : -1);
 }
@@ -15463,6 +15676,7 @@ static void update_mouse_state(Avm2Context* ctx, int changed_button, int is_move
 	update_drag(ctx);
 	int mouse_in_stage = 1;
 	Avm2Object* new_over = mouse_in_stage ? run_mouse_pick(ctx) : NULL;
+	g_last_pick_avm1 = PICK_IS_AVM1(new_over);
 	if (changed_button == 0)
 		avm2_dbg_pick_label(ctx, g_mouse_btn_down[0] ? "down" : "up", new_over);
 	Avm2Object* cur_over = g_mouse_hovered;
@@ -15797,7 +16011,7 @@ static void avm2_dbg_dump_node(Avm2Context* ctx, Avm2Object* obj, int depth)
 	const char* cn = (obj->cls != NULL && obj->cls->name.name != NULL)
 		? obj->cls->name.name : "?";
 	const char* nm = (ext->name != NULL && ext->name->utf8 != NULL)
-		? ext->name->utf8 : "(anon)";
+		? avm2_string_cstr(ctx, ext->name) : "(anon)";
 	Mat wm = display_world_matrix(ctx, obj);
 	Rect acc = { 0, 0, 0, 0, 0 };
 	bounds_with_transform(ctx, obj, &wm, &acc);
@@ -17329,7 +17543,7 @@ void avm2_register_display(Avm2Context* ctx)
 	                        video_set_smoothing);
 	avm2_builtin_add_getter(ctx, video, "videoWidth", video_get_zero);
 	avm2_builtin_add_getter(ctx, video, "videoHeight", video_get_zero);
-	avm2_builtin_add_method(ctx, video, "attachNetStream", video_noop);
+	avm2_builtin_add_method(ctx, video, "attachNetStream", video_attach_net_stream);
 	avm2_builtin_add_method(ctx, video, "attachCamera", video_noop);
 	avm2_builtin_add_method(ctx, video, "clear", video_noop);
 
@@ -18256,10 +18470,9 @@ static void avm2_render_bitmap(Avm2Context* ctx, Avm2Object* obj,
 	if (bd == NULL || bd->disposed || bd->pixels == NULL
 	    || bd->width == 0 || bd->height == 0)
 		return;
-	// Honest failure: a BitmapData larger than the dynamic layer is skipped
-	// (blank) rather than corrupting the texture / crashing.
-	if (bd->width > context->dynamic_bitmap_max_w
-	    || bd->height > context->dynamic_bitmap_max_h)
+	// A BitmapData larger than the dynamic layer raises it (up to the device
+	// limit; beyond that the renderer logs once and the node stays blank).
+	if (!renderer_fit_dynamic_bitmap(context, bd->width, bd->height))
 		return;
 
 	// Per-object world transform slot.
@@ -18280,6 +18493,43 @@ static void avm2_render_bitmap(Avm2Context* ctx, Avm2Object* obj,
 	renderer_draw_bitmap_quad_scaled(context, bd->pixels,
 		bd->width, bd->height, bd->width, bd->height,
 		0.0f, 0.0f, xid, cxid);
+}
+
+// Blit a NetStream-attached Video: the stream's last decoded frame, stretched
+// over the Video's own bounds (Ruffle video.rs render_with_options scales by
+// bounds / bitmap size). NetStream video is never smoothed (Ruffle hardcodes
+// `false` for the NetStream source), which is the quad's Nearest sampler.
+static void avm2_render_video(Avm2Context* ctx, Avm2Object* obj,
+                              const Mat* world)
+{
+	if (!g_video_netstream_attached || g_video_class == NULL) return;
+	Avm2DisplayObjectExt* ext = avm2_display_ext_of(ctx, obj);
+	if (ext == NULL || !ext->draw_valid) return;
+	Avm2Value* nsv = avm2_object_find_dynamic(obj, "_netStream", 10);
+	if (nsv == NULL || nsv->kind != AVM2_VALUE_OBJECT) return;
+	const uint32_t* px = NULL;
+	int fw = 0, fh = 0;
+	if (!avm2_net_netstream_video_frame(nsv->u.obj, &px, &fw, &fh)) return;
+	if ((uint32_t) fw > context->dynamic_bitmap_max_w
+	    || (uint32_t) fh > context->dynamic_bitmap_max_h)
+		return;
+	double bw = (double) (ext->draw_xmax - ext->draw_xmin) / 20.0;
+	double bh = (double) (ext->draw_ymax - ext->draw_ymin) / 20.0;
+	int dw = (int) (bw + 0.5), dh = (int) (bh + 0.5);
+	if (dw <= 0 || dh <= 0) return;
+
+	uint32_t xid = 0;
+	if (g_avm2_xform_next < context->xform_slot_count)
+	{
+		float m16[16];
+		avm2_world_to_mat16(world, m16);
+		xid = g_avm2_xform_next++;
+		renderer_write_transform(context, xid, m16);
+	}
+	uint32_t cxid = avm2_alloc_cx_slot();
+	renderer_draw_bitmap_quad_scaled(context, px, (uint32_t) fw, (uint32_t) fh,
+		(uint32_t) dw, (uint32_t) dh,
+		(float) ext->draw_xmin, (float) ext->draw_ymin, xid, cxid);
 }
 
 // Draw one renderable timeline shape node: its pre-tessellated triangles
@@ -18462,12 +18712,11 @@ static void avm2_render_graphics(Avm2Context* ctx, Avm2Object* obj,
 			                            p->grad_type, p->grad_spread, p->grad_interp,
 			                            p->grad_focal, p->grad_ramp, p->grad_fwd16,
 			                            xid, cxid);
-		// Honest failure: a source larger than the dynamic bitmap layer would
-		// corrupt the texture, so it is skipped (blank) — the same guard
-		// avm2_render_bitmap applies to a Bitmap node.
+		// A source larger than the dynamic bitmap layer raises it, as for a
+		// Bitmap node (avm2_render_bitmap); only a source past the device limit
+		// is skipped (logged once by the renderer).
 		else if (p->fill_kind == 3 && p->fill_vert_count >= 3 && p->bmp_px != NULL
-		         && p->bmp_w <= context->dynamic_bitmap_max_w
-		         && p->bmp_h <= context->dynamic_bitmap_max_h)
+		         && renderer_fit_dynamic_bitmap(context, p->bmp_w, p->bmp_h))
 			renderer_draw_bitmap_tris(context, p->fill_verts, p->fill_vert_count,
 			                          p->bmp_px, p->bmp_w, p->bmp_h,
 			                          p->bmp_matrix, p->bmp_repeat, p->bmp_smooth,
@@ -18485,8 +18734,8 @@ static void avm2_render_graphics(Avm2Context* ctx, Avm2Object* obj,
 				                            p->lsty.grad_ramp, p->lsty.grad_fwd16,
 				                            xid, cxid);
 			else if (p->lsty.kind == 3 && p->lsty.bmp_px != NULL
-			         && p->lsty.bmp_w <= context->dynamic_bitmap_max_w
-			         && p->lsty.bmp_h <= context->dynamic_bitmap_max_h)
+			         && renderer_fit_dynamic_bitmap(context, p->lsty.bmp_w,
+			                                        p->lsty.bmp_h))
 				renderer_draw_bitmap_tris(context, p->line_verts,
 				                          p->line_vert_count, p->lsty.bmp_px,
 				                          p->lsty.bmp_w, p->lsty.bmp_h,
@@ -19471,6 +19720,76 @@ static void avm2_filter_draw_offset_px(const Avm2FilterVal* const* list,
 	*oy = floor((double) y_min / 20.0);
 }
 
+// Run ONE filter IN PLACE on the layer already in filter_tex_a, leaving the
+// filtered result there (no framebuffer composite). A composed filter (glow /
+// drop shadow / bevel) snapshots its input as its composite source, blurs,
+// and is composed back INTO the layer (renderer_compose_filter_to_layer), so
+// the next filter receives exactly this one's output - Ruffle's per-filter
+// ping-pong (render/wgpu/src/filters.rs apply_filter). Same flag decoding and
+// offset rounding as the final-filter path of avm2_render_filtered. Main pass
+// must be suspended.
+static void avm2_filter_one_in_place(Avm2Context* ctx, const Avm2FilterVal* f)
+{
+	int is_blur = (f->kind == AVM2_FILTER_BLUR);
+	int is_shadow = (f->kind == AVM2_FILTER_DROP_SHADOW);
+	int is_glow = (f->kind == AVM2_FILTER_GLOW);
+	int is_bevel = (f->kind == AVM2_FILTER_BEVEL);
+	if (!(is_blur || is_shadow || is_glow || is_bevel)) return;
+	if (!is_blur) renderer_snapshot_filter_source(context);
+	float cr = (float) ((f->color >> 16) & 0xFF) / 255.0f;
+	float cg = (float) ((f->color >> 8) & 0xFF) / 255.0f;
+	float cb = (float) (f->color & 0xFF) / 255.0f;
+	float ca = (float) f->alpha / 255.0f;
+	renderer_run_blur(context,
+		avm2_filter_fixed16(f->blur_x), avm2_filter_fixed16(f->blur_y),
+		f->quality, 1.0f, cr, cg, cb, ca, 0);
+	if (is_blur) return;
+
+	SWFAppContext* app = ctx->app;
+	float fit_x = app->stage_fit_x > 0.0f ? app->stage_fit_x : 1.0f;
+	float fit_y = app->stage_fit_y > 0.0f ? app->stage_fit_y : 1.0f;
+	float vs = context->stage_scale > 0.0f ? context->stage_scale : 1.0f;
+	int f_inner = f->inner, f_knockout = f->knockout;
+	int f_composite = f->hide_object ? 0 : 1;
+	int bevel_type = 0;
+	if (is_bevel) { bevel_type = f->on_top ? 2 : (f_inner ? 1 : 0); f_composite = 1; }
+	float angle_rad = avm2_filter_fixed16(f->angle);
+	float dist_px = (is_shadow || is_bevel) ? avm2_filter_fixed16(f->distance) : 0.0f;
+	float xd = cosf(angle_rad) * dist_px * vs, yd = sinf(angle_rad) * dist_px * vs;
+	float uvx = fit_x / ((float) context->width * vs);
+	float uvy = fit_y / ((float) context->height * vs);
+	float du, dv;
+	if (is_bevel) { du = floorf(xd + 0.5f) * uvx; dv = floorf(yd + 0.5f) * uvy; }
+	else { du = -floorf(-xd + 0.5f) * uvx; dv = -floorf(-yd + 0.5f) * uvy; }
+	float strength = avm2_filter_fixed8(f->strength);
+	if (is_bevel)
+		renderer_compose_filter_to_layer(context, 1, du, dv,
+			(float) ((f->color2 >> 16) & 0xFF) / 255.0f,
+			(float) ((f->color2 >> 8) & 0xFF) / 255.0f,
+			(float) (f->color2 & 0xFF) / 255.0f,
+			(float) f->alpha2 / 255.0f,
+			cr, cg, cb, ca, strength, bevel_type, f_knockout, f_composite);
+	else
+		renderer_compose_filter_to_layer(context, 0, -du, -dv,
+			cr, cg, cb, ca, 0.0f, 0.0f, 0.0f, 0.0f,
+			strength, f_inner, f_knockout, f_composite);
+}
+
+// Run an object's whole filter list in place (avm2_filter_one_in_place per
+// entry). Displacement maps are skipped: they need the object rect, and no
+// corpus mask layer carries one.
+static void avm2_filter_layer_in_place(Avm2Context* ctx,
+                                       const Avm2DisplayObjectExt* ext)
+{
+	for (uint32_t i = 0; i < ext->filter_count; i++)
+	{
+		const Avm2FilterVal* f = &ext->filters[i];
+		if (!avm2_filter_renderable(f)) continue;
+		if (f->kind == AVM2_FILTER_DISPLACEMENT_MAP) continue;
+		avm2_filter_one_in_place(ctx, f);
+	}
+}
+
 static void avm2_render_filtered(Avm2Context* ctx, Avm2Object* obj,
                                  Avm2DisplayObjectExt* ext,
                                  const Mat* parent_world, double parent_alpha,
@@ -19546,6 +19865,18 @@ static void avm2_render_filtered(Avm2Context* ctx, Avm2Object* obj,
 	int draw_source_after  = is_bevel ? (!f_knockout && bevel_type == 0)
 	                                  : (!f_inner && !f_knockout && f_composite);
 	int draw_source_before = is_bevel && !f_knockout && bevel_type == 2;
+	// CHAINED: every non-final composed filter is composed back into the
+	// layer (avm2_filter_one_in_place), so the LAST filter's composite source
+	// is the layer it receives, not the crisp object - same rule as tag.c
+	// render_filtered_object. Snapshot it inside the loop and let the shader
+	// composite.
+	int chained = (n > 1);
+	if (chained)
+	{
+		needs_source_tex = 1;
+		draw_source_after = 0;
+		draw_source_before = 0;
+	}
 	int shader_composite = (draw_source_after || draw_source_before)
 	                       ? 0 : f_composite;
 	// Plain blur has no composition flags and keeps the legacy blit-back.
@@ -19555,7 +19886,7 @@ static void avm2_render_filtered(Avm2Context* ctx, Avm2Object* obj,
 	renderer_begin_offscreen_pass(context);
 	avm2_render_node(ctx, obj, parent_world, parent_alpha, parent_cx);
 	renderer_end_offscreen_pass(context);
-	if (needs_source_tex)
+	if (needs_source_tex && !chained)
 		renderer_snapshot_filter_source(context);
 
 	// A lone drop shadow's whole-pixel offset is folded into the blur (see
@@ -19579,10 +19910,10 @@ static void avm2_render_filtered(Avm2Context* ctx, Avm2Object* obj,
 
 	// filter_tex_a is the ping-pong's own input AND output, so an N-long list
 	// of plain blurs chains for free and is bit-equal to one blur of quality N,
-	// exactly as Flash requires. A non-final glow/dropShadow/bevel is
-	// approximated by colorizing inside the blur - exact when the stacked
-	// filters are identical, an approximation otherwise; the exact form needs a
-	// compose-into-offscreen pipeline.
+	// exactly as Flash requires. A non-final glow/dropShadow/bevel is composed
+	// back into the layer (avm2_filter_one_in_place), so the next filter
+	// receives its real output (source composited in, inner/knockout
+	// honoured).
 	for (uint32_t i = 0; i < n; i++)
 	{
 		const Avm2FilterVal* f = list[i];
@@ -19593,21 +19924,27 @@ static void avm2_render_filtered(Avm2Context* ctx, Avm2Object* obj,
 			continue;
 		}
 		int f_is_blur = (f->kind == AVM2_FILTER_BLUR);
+		if (chained && !f_last && !f_is_blur)
+		{
+			avm2_filter_one_in_place(ctx, f);
+			continue;
+		}
+		if (chained && f_last)
+			renderer_snapshot_filter_source(context);
 		// AS3 BlurFilter has no `strength` property, so Avm2FilterVal.strength
 		// stays 0 for it - passing that through would multiply the layer by
 		// zero and the object would VANISH. Plain blur is always strength 1.
 		// For the final composed filter, strength is applied by the
 		// composition shader instead (inner needs the RAW blurred alpha).
-		float st = f_is_blur ? 1.0f : avm2_filter_fixed8(f->strength);
-		if (f_last && !f_is_blur) st = 1.0f;
-		int colorize = (!f_last && !f_is_blur) ? 1 : 0;
+		// (Non-final composed filters never reach here: they took the
+		// in-place arm above.)
 		renderer_run_blur(context,
 			avm2_filter_fixed16(f->blur_x), avm2_filter_fixed16(f->blur_y),
-			f->quality, st,
+			f->quality, 1.0f,
 			(float) ((f->color >> 16) & 0xFF) / 255.0f,
 			(float) ((f->color >> 8) & 0xFF) / 255.0f,
 			(float) (f->color & 0xFF) / 255.0f,
-			(float) f->alpha / 255.0f, colorize);
+			(float) f->alpha / 255.0f, 0);
 	}
 
 	renderer_resume_pass(context);
@@ -19803,22 +20140,23 @@ static void avm2_render_alpha_masked(Avm2Context* ctx, Avm2Object* obj,
 
 	// (1) the MASK layer, into filter_tex_a, then snapshotted aside.
 	//
-	// Filters on the masker are suppressed for the same structural reason cut 1
-	// suppresses them on a stencil masker: avm2_render_filtered drives the SAME
+	// avm2_render_filtered cannot be re-entered here: it drives the SAME
 	// suspend / offscreen / resume ping-pong this function is already holding,
-	// and re-entering it would end the layer pass mid-flight. Ruffle's alpha arm
-	// does apply them (`m.render_with_options`), so a FILTERED masker's alpha
-	// layer is its raw silhouette here — the one place this port knowingly
-	// diverges, and the reason cab_mask_filters' two maskeeCab cells still
-	// differ. Completion mechanism: a compose-into-offscreen pipeline (the same
-	// one the filter chain wants for a non-final glow), after which the masker
-	// layer can run its own filter chain inside this pass.
+	// and would end the layer pass mid-flight. So the masker is drawn with
+	// filters suppressed (g_avm2_filter_active) and its OWN filter list is then
+	// run in place on the finished layer (avm2_filter_layer_in_place, the
+	// compose-into-offscreen path) - Ruffle's alpha arm renders the masker WITH
+	// its filters (`m.render_with_options`) and consumes only the layer's
+	// alpha (s22: visual/cache_as_bitmap/cab_mask_filters). Filters on the
+	// masker's DESCENDANTS are still suppressed.
 	renderer_begin_offscreen_pass(context);
 	g_avm2_filter_active = 1;
 	g_avm2_alpha_masker = ext->mask;
 	g_avm2_alpha_maskee = NULL;
 	avm2_render_node(ctx, ext->mask, &mpw, 1.0, &AVM2_CX_IDENTITY);
 	renderer_end_offscreen_pass(context);
+	if (mext->filter_count > 0)
+		avm2_filter_layer_in_place(ctx, mext);
 	renderer_snapshot_filter_source(context);
 
 	// (2) the MASKEE layer, into filter_tex_a (the offscreen pass clears it).
@@ -19844,6 +20182,43 @@ static void avm2_render_alpha_masked(Avm2Context* ctx, Avm2Object* obj,
 // Depth-ordered render-list walk (paint order, back-to-front), accumulating the
 // world matrix + concatenated alpha down the tree. Invisible subtrees are
 // culled, matching render_apply_text_bounds.
+// DisplayObject.z perspective (w2-avm2-stage-view). Ruffle accumulates tz
+// ADDITIVELY down the transform stack (render/src/transform.rs:26, unscaled by
+// any ancestor's 2D matrix) and applies one fixed global projection in the
+// vertex shader (render/wgpu/src/globals.rs:30-63: the default
+// PerspectiveProjection, fieldOfView 55, centred on the viewport, focal length
+// f = (viewport_w/2) * tan(62.5 deg) = 480.25 px on a 500-px viewport). For a
+// z-only object (no rotationX/Y, which we do not model) the divide reduces to
+// an exact 2D scale k = f / (f + tz) about the viewport centre, applied AFTER
+// the full 2D world concat -- so it is composed onto the leaf draw matrix
+// here, never onto the matrix the children inherit. w <= 0 (tz <= -f) clips
+// the whole primitive away; returns 0 then. The translation is kept unrounded
+// (the shader works in continuous f32, not twips).
+static double g_avm2_render_tz = 0.0;
+
+static int avm2_z_project(const Mat* world, double tz, Mat* out)
+{
+	*out = *world;
+	if (tz == 0.0 || context == NULL || context->stage_to_ndc == NULL) return 1;
+	const float* m = context->stage_to_ndc;
+	if (m[0] == 0.0f || m[5] == 0.0f || context->width == 0) return 1;
+	const double rad = 55.0 * (M_PI / 180.0);
+	double f = (double) (float) tan((M_PI - rad) / 2.0);
+	double vw = (double) context->width / 2.0;
+	double w = (double) (float) tz / vw + f;
+	if (!(w > 0.0)) return 0;
+	double k = f / w;
+	double cx = -(double) m[12] / (double) m[0];   // viewport centre, stage twips
+	double cy = -(double) m[13] / (double) m[5];
+	out->a = world->a * k;
+	out->b = world->b * k;
+	out->c = world->c * k;
+	out->d = world->d * k;
+	out->tx = world->tx * k + cx * (1.0 - k);
+	out->ty = world->ty * k + cy * (1.0 - k);
+	return 1;
+}
+
 static void avm2_render_node(Avm2Context* ctx, Avm2Object* obj,
                              const Mat* parent_world, double parent_alpha,
                              const Avm2Cx* parent_cx)
@@ -19954,6 +20329,11 @@ static void avm2_render_node(Avm2Context* ctx, Avm2Object* obj,
 	Mat local = ext_matrix(ext);
 	Mat world = mat_mul(parent_world, &local);
 	double alpha = parent_alpha * ((double) ext->alpha_fixed8 / 256.0);
+	double saved_render_tz = g_avm2_render_tz;
+	double node_tz = saved_render_tz + ext->render_tz;
+	g_avm2_render_tz = node_tz;
+	Mat draw_world;
+	int z_visible = avm2_z_project(&world, node_tz, &draw_world);
 
 	// Concatenate this node's FULL colour transform onto the parent's and
 	// publish it for the leaf writers below (they read g_avm2_cur_cx via
@@ -19966,8 +20346,8 @@ static void avm2_render_node(Avm2Context* ctx, Avm2Object* obj,
 
 	// opaqueBackground — painted UNDER this node and outside its own mask /
 	// scrollRect, exactly where Ruffle's render_base emits it.
-	if (g_avm2_mask_capture == 0)
-		avm2_draw_opaque_background(ctx, obj, ext, &world);
+	if (g_avm2_mask_capture == 0 && z_visible)
+		avm2_draw_opaque_background(ctx, obj, ext, &draw_world);
 
 	// DisplayObject.mask — clip this node AND its whole subtree to the masker's
 	// silhouette. The masker lives elsewhere in the tree, so its stencil pass
@@ -20018,25 +20398,36 @@ static void avm2_render_node(Avm2Context* ctx, Avm2Object* obj,
 		Mat sr_tr = { 1.0, 0.0, 0.0, 1.0,
 		              -(double) ext->sr_xmin, -(double) ext->sr_ymin };
 		world = mat_mul(&world, &sr_tr);
+		z_visible = avm2_z_project(&world, node_tz, &draw_world);
 	}
 
-	if (ext->is_bitmap)
-		avm2_render_bitmap(ctx, obj, &world, alpha);
+	if (g_video_netstream_attached && z_visible)
+		avm2_render_video(ctx, obj, &draw_world);
+
+	if (!z_visible)
+	{
+		// culled by the perspective divide; children may still draw
+	}
+	else if (ext->is_bitmap)
+		avm2_render_bitmap(ctx, obj, &draw_world, alpha);
 	else if (ext->is_morph_shape && ext->shape_vert_count > 0)
-		avm2_render_morph(ctx, obj, &world, alpha);
+		avm2_render_morph(ctx, obj, &draw_world, alpha);
 	else if (ext->shape_vert_count > 0)
-		avm2_render_shape(ctx, obj, &world, alpha);
+		avm2_render_shape(ctx, obj, &draw_world, alpha);
 
-	// Native timeline TextField (DefineEditText) glyphs.
-	if (ext->edittext != NULL)
-		avm2_render_text(ctx, obj, &world, alpha);
+	if (z_visible)
+	{
+		// Native timeline TextField (DefineEditText) glyphs.
+		if (ext->edittext != NULL)
+			avm2_render_text(ctx, obj, &draw_world, alpha);
 
-	// Native timeline static text (DefineText/2 -> StaticText) glyphs.
-	if (ext->statictext != NULL)
-		avm2_render_statictext(ctx, obj, &world, alpha);
+		// Native timeline static text (DefineText/2 -> StaticText) glyphs.
+		if (ext->statictext != NULL)
+			avm2_render_statictext(ctx, obj, &draw_world, alpha);
 
-	// T4: script-drawn Graphics geometry (independent of a timeline shape).
-	avm2_render_graphics(ctx, obj, &world, alpha);
+		// T4: script-drawn Graphics geometry (independent of a timeline shape).
+		avm2_render_graphics(ctx, obj, &draw_world, alpha);
+	}
 
 	// SimpleButton (Ruffle avm2_button.rs::render_self): paint the child for
 	// the CURRENT state, and only that one — never the hit area, and no Up
@@ -20117,6 +20508,7 @@ static void avm2_render_node(Avm2Context* ctx, Avm2Object* obj,
 		renderer_restore_clip(context, saved_sr_ref);
 	if (pushed_mask)
 		renderer_restore_clip(context, saved_clip_ref);
+	g_avm2_render_tz = saved_render_tz;
 }
 
 // Focus highlight, drawn on TOP of the whole stage (Ruffle
@@ -20172,6 +20564,7 @@ static void avm2_render_walk(Avm2Context* ctx)
 	g_avm2_xform_next = g_avm2_xform_base;
 	g_avm2_cxform_next = g_avm2_cxform_base;
 	g_avm2_cur_cx = AVM2_CX_IDENTITY;
+	g_avm2_render_tz = 0.0;
 	// Stage3D composites UNDERNEATH the whole display list, in stage3Ds index
 	// order, each at its own (x, y) (stage.rs:625-634). The quad is the back
 	// buffer at 1:1 stage pixels, opaque and nearest-sampled, which is what
@@ -20218,8 +20611,9 @@ void avm2_render_init(Avm2Context* ctx)
 
 	// Dynamic bitmap-layer dims. The dynamic layer is sized to
 	// dynamic_bitmap_max_{w,h}+1 (render_webgpu init) and every runtime
-	// BitmapData blits into it; larger BitmapData is skipped (blank) in
-	// avm2_render_bitmap. Cover the whole stage AND every embedded bitmap
+	// BitmapData blits into it; a larger runtime BitmapData raises it on demand
+	// (render_webgpu_fit_dynamic_bitmap, up to the device limit), so this is
+	// the STARTING size only. Cover the whole stage AND every embedded bitmap
 	// character: an AVM2 movie that places a DefineBits* character directly
 	// seeds its BitmapData from that character (avm2_bitmap_seed_timeline),
 	// and those are routinely LARGER than the stage — from_shumway/acid's
@@ -20328,3 +20722,110 @@ int avm2_render_present(Avm2Context* ctx)
 #endif
 
 #endif  // render gate
+
+// Stage view transform for the current scaleMode/align (w2-avm2-stage-view).
+// A literal port of Ruffle display_object/stage.rs build_matrices: per-mode
+// scale (NoScale = the HiDPI scale factor), then L>R>centre / T>B>centre
+// translation of the width/height delta, truncated to twips
+// (Twips::from_pixels). The harness's showAll/centred fit (wasm_wrappers/
+// main.c) stays the authority whenever the result equals it: the original
+// stage_to_ndc / stage_scale / stage_fit pointer and values are restored
+// verbatim, so every test that sets a mode equivalent to the default (viewport
+// == stage, or a 2x viewport at scale_factor 2) is bit-identical. Like main.c
+// the fit goes into the projection, not a SetViewport, so content outside the
+// movie box is drawn into the margins (Ruffle's tests never letterbox).
+#if defined(OFFSCREEN_RENDER) || (defined(__EMSCRIPTEN__) && !defined(NO_GRAPHICS))
+static void avm2_stage_view_apply(Avm2Context* ctx)
+{
+	static int saved = 0;
+	static const float* base_ndc;
+	static float base_scale, base_fit_x, base_fit_y;
+	static float view_ndc[16];
+	SWFAppContext* app = ctx->app;
+	if (app == NULL) return;
+	if (!saved)
+	{
+		saved = 1;
+		base_ndc = app->stage_to_ndc;
+		base_scale = app->stage_scale;
+		base_fit_x = app->stage_fit_x;
+		base_fit_y = app->stage_fit_y;
+	}
+	double vw = (double) (app->render_width > 0 ? app->render_width : app->width);
+	double vh = (double) (app->render_height > 0 ? app->render_height : app->height);
+	double mw = (double) app->width, mh = (double) app->height;
+	if (mw <= 0.0 || mh <= 0.0 || vw <= 0.0 || vh <= 0.0) return;
+#ifdef VIEWPORT_SCALE_FACTOR
+	double sf = (double) (VIEWPORT_SCALE_FACTOR);
+#else
+	double sf = 1.0;
+#endif
+	double show_all = (vw / vh > mw / mh) ? vh / mh : vw / mw;
+	double sx, sy;
+	switch (g_stage_scale_mode)
+	{
+		case AVM2_SCALE_NO_BORDER:
+			sx = sy = (vw / vh < mw / mh) ? vh / mh : vw / mw;
+			break;
+		case AVM2_SCALE_EXACT_FIT:
+			sx = vw / mw;
+			sy = vh / mh;
+			break;
+		case AVM2_SCALE_NO_SCALE:
+			sx = sy = sf;
+			break;
+		default:
+			sx = sy = show_all;
+			break;
+	}
+	double wd = vw - mw * sx, hd = vh - mh * sy;
+	double tx = (g_stage_align & AVM2_ALIGN_L) ? 0.0
+	          : (g_stage_align & AVM2_ALIGN_R) ? wd : wd / 2.0;
+	double ty = (g_stage_align & AVM2_ALIGN_T) ? 0.0
+	          : (g_stage_align & AVM2_ALIGN_B) ? hd : hd / 2.0;
+	int tx_tw = (int) (tx * 20.0), ty_tw = (int) (ty * 20.0);
+	int def_tx_tw = (int) ((vw - mw * show_all) / 2.0 * 20.0);
+	int def_ty_tw = (int) ((vh - mh * show_all) / 2.0 * 20.0);
+
+	const float* ndc;
+	float scale, fit_x, fit_y;
+	if (sx == show_all && sy == show_all && tx_tw == def_tx_tw && ty_tw == def_ty_tw)
+	{
+		ndc = base_ndc;
+		scale = base_scale;
+		fit_x = base_fit_x;
+		fit_y = base_fit_y;
+	}
+	else
+	{
+		// stage twips -> device px: px = s*(X/20 - origin) + t; then NDC.
+		double ox = (double) avm2_generated_stage_rect[0] / 20.0;
+		double oy = (double) avm2_generated_stage_rect[2] / 20.0;
+		memset(view_ndc, 0, sizeof(view_ndc));
+		view_ndc[0]  = (float) (2.0 * sx / (20.0 * vw));
+		view_ndc[5]  = (float) (-2.0 * sy / (20.0 * vh));
+		view_ndc[10] = 1.0f;
+		view_ndc[12] = (float) (-1.0 + 2.0 * (tx_tw / 20.0 - sx * ox) / vw);
+		view_ndc[13] = (float) (1.0 - 2.0 * (ty_tw / 20.0 - sy * oy) / vh);
+		view_ndc[15] = 1.0f;
+		ndc = view_ndc;
+		scale = (float) (sx < sy ? sx : sy);
+		fit_x = (float) (mw * sx / vw);
+		fit_y = (float) (mh * sy / vh);
+	}
+	app->stage_to_ndc = ndc;
+	app->stage_scale = scale;
+	app->stage_fit_x = fit_x;
+	app->stage_fit_y = fit_y;
+	if (context != NULL)
+	{
+		context->stage_to_ndc = ndc;
+		context->stage_scale = scale > 0.0f ? scale : 1.0f;
+	}
+}
+#else
+static void avm2_stage_view_apply(Avm2Context* ctx)
+{
+	(void) ctx;
+}
+#endif

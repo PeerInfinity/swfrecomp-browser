@@ -12,6 +12,7 @@
 #include <strings.h>
 
 #include <avm2/avm2_value.h>
+#include <html_img.h>  // w2-htmltext: shared AVM1/AVM2 htmlText <img> rules
 #include <memory/heap.h>
 
 #include <avm2/avm2_gc.h>
@@ -759,6 +760,7 @@ typedef struct Avm2TextSpan
 {
 	uint32_t length;  // UTF-16 units
 	Avm2TextFormatFields fmt;  // fully present
+	uint16_t img;  // html_img.h pool index of an <img> placeholder (0 = none)
 } Avm2TextSpan;
 
 struct LLayout;
@@ -886,6 +888,7 @@ static void spans_push(Avm2Context* ctx, Avm2EditTextExt* et, uint32_t length,
 	s->fmt = span_default(ctx);
 	fields_apply(&s->fmt, tf);
 	s->fmt.display = DISPLAY_BLOCK;
+	s->img = 0;
 }
 
 static void spans_insert(Avm2Context* ctx, Avm2EditTextExt* et, uint32_t at,
@@ -896,6 +899,7 @@ static void spans_insert(Avm2Context* ctx, Avm2EditTextExt* et, uint32_t at,
 	        (et->span_count - at) * sizeof(Avm2TextSpan));
 	et->spans[at].length = length;
 	et->spans[at].fmt = *concrete;
+	et->spans[at].img = 0;
 	et->span_count++;
 }
 
@@ -947,7 +951,7 @@ static void spans_normalize(Avm2Context* ctx, Avm2EditTextExt* et)
 		{
 			spans_remove_range(et, i + 1, i + 2);
 		}
-		else if (fields_equal(&a->fmt, &b->fmt))
+		else if (fields_equal(&a->fmt, &b->fmt) && a->img == b->img)
 		{
 			a->length += b->length;
 			spans_remove_range(et, i + 1, i + 2);
@@ -995,6 +999,7 @@ static void span_break_at(Avm2Context* ctx, Avm2EditTextExt* et, uint32_t pos)
 			Avm2TextFormatFields fmt = et->spans[i].fmt;
 			et->spans[i].length = first;
 			spans_insert(ctx, et, i + 1, e - pos, &fmt);
+			et->spans[i + 1].img = et->spans[i].img;
 			return;
 		}
 		acc = e;
@@ -1265,14 +1270,16 @@ typedef struct HtmlAttr
 	uint32_t value_len;
 } HtmlAttr;
 
+// A duplicated attribute resolves to its LAST occurrence (Flash; Ruffle
+// 69a017387 `attributes.iter().rev()`).
 static const HtmlAttr* attr_find(const HtmlAttr* attrs, uint32_t n, const char* name)
 {
 	uint32_t nl = (uint32_t) strlen(name);
-	for (uint32_t i = 0; i < n; i++)
+	for (uint32_t i = n; i > 0; i--)
 	{
-		if (attrs[i].name_len == nl && strncasecmp(attrs[i].name, name, nl) == 0)
+		if (attrs[i - 1].name_len == nl && strncasecmp(attrs[i - 1].name, name, nl) == 0)
 		{
-			return &attrs[i];
+			return &attrs[i - 1];
 		}
 	}
 	return NULL;
@@ -1574,6 +1581,32 @@ static void spans_from_html(Avm2Context* ctx, Avm2EditTextExt* et,
 			else if (strcmp(tag_name, "sbr") == 0)
 			{
 				PUSH_TEXT_SPAN("\r", 1, &format);
+				skip_push = 1;
+				handle_end = 0;
+			}
+			else if (strcmp(tag_name, "img") == 0)
+			{
+				// One placeholder space at size 2 carrying the image; the
+				// format stack is untouched. Rules: html_img.h.
+				static const char* const img_attrs[] = {
+					"src", "id", "width", "height", "align", "hspace", "vspace",
+					"checkpolicyfile" };
+				const HtmlAttr* src = ATTR("src");
+				if (swf_version >= 7 && src != NULL && src->value != NULL)
+				{
+					HtmlImg img;
+					html_img_init(&img);
+					for (uint32_t ai = 0; ai < sizeof(img_attrs) / sizeof(img_attrs[0]); ai++)
+					{
+						const HtmlAttr* a = ATTR(img_attrs[ai]);
+						if (a != NULL && a->value != NULL) html_img_set_attr(&img, img_attrs[ai], a->value);
+					}
+					Avm2TextFormatFields img_format = format;
+					img_format.size = 2.0;
+					img_format.present |= TFP_SIZE;
+					PUSH_TEXT_SPAN(" ", 1, &img_format);
+					et->spans[et->span_count - 1].img = html_img_intern(&img);
+				}
 				skip_push = 1;
 				handle_end = 0;
 			}
@@ -1905,10 +1938,30 @@ static void spans_from_html(Avm2Context* ctx, Avm2EditTextExt* et,
 		uint32_t nrem = 0;
 		int have_start = 1;
 		uint32_t rem_start = 0;
+		uint32_t img_span = 0, img_acc = 0;
 		for (uint32_t i = 0; i < len; i++)
 		{
 			int is_nl = (u[i] == '\r');
 			int is_sp = (u[i] == ' ');
+			// An <img> placeholder space (the start of an image span) is
+			// never removed, but whitespace after it still collapses.
+			while (img_span < et->span_count && img_acc + et->spans[img_span].length <= i)
+			{
+				img_acc += et->spans[img_span].length;
+				img_span++;
+			}
+			int is_image = is_sp && img_span < et->span_count && img_acc == i
+			               && et->spans[img_span].img != 0;
+			if (is_image && have_start)
+			{
+				if (nrem < 256)
+				{
+					to_remove[nrem][0] = rem_start;
+					to_remove[nrem][1] = i;
+					nrem++;
+				}
+				have_start = 0;
+			}
 			if (is_nl || !is_sp)
 			{
 				if (have_start && nrem < 256)
@@ -1968,6 +2021,7 @@ typedef struct HtmlWriter
 	int open_tags[16];
 	uint32_t open_n;
 	Avm2TextFormatFields default_span;
+	uint16_t img;  // <img> of the span being set (html_img.h index, 0 = none)
 } HtmlWriter;
 
 static void hw_puts(HtmlWriter* w, const char* s)
@@ -2218,7 +2272,15 @@ static void hw_set_span(HtmlWriter* w, const Avm2TextFormatFields* span)
 		hw_open_tag(w, span->bullet ? HT_LI : HT_P);
 	}
 	hw_set_font(w, span);
+	// IMG is not closeable: written outside <A> before SWF8, inside after.
+	char imgtag[HTML_IMG_SRC_MAX + HTML_IMG_ID_MAX + 160];
+	imgtag[0] = '\0';
+	if (w->img != 0 && html_img_get(w->img) != NULL)
+		html_img_serialize(html_img_get(w->img), imgtag, sizeof(imgtag));
+	if (w->ctx->swf_version < 8) hw_puts(w, imgtag);
 	if (span->url != NULL && span->url->len > 0) hw_open_tag(w, HT_A);
+	if (w->ctx->swf_version >= 8) hw_puts(w, imgtag);
+	w->img = 0;
 	if (span->bold) hw_open_tag(w, HT_B);
 	if (span->italic) hw_open_tag(w, HT_I);
 	if (span->underline) hw_open_tag(w, HT_U);
@@ -2278,6 +2340,7 @@ static const Avm2String* spans_to_html(Avm2Context* ctx, Avm2EditTextExt* et)
 		acc = end;
 		if (end > u16_length(et->text)) end = u16_length(et->text);
 		if (end <= start) continue;
+		w.img = et->spans[i].img;
 		hw_set_span(&w, &et->spans[i].fmt);
 		uint32_t sb2 = u16_to_byte(et->text, start);
 		uint32_t eb = u16_to_byte(et->text, end);
@@ -2712,6 +2775,47 @@ static const Avm2FontData* find_device_font_list(const Avm2String* name,
 	return NULL;
 }
 
+// Ruffle layout.rs:604-625: the DefaultFont a device font list falls back to
+// when none of its names resolved, keyed on the FIRST (untrimmed) name: a
+// DefaultFont name itself, the well-known aliases, else Sans (like Flash).
+// Returns the `[default_fonts]` row for it, or NULL when the test declares
+// none (the caller then keeps the baked-in Noto).
+static const Avm2FontData* find_default_font_row(const Avm2String* name,
+                                                 int bold, int italic)
+{
+	if (avm2_generated_device_font_count == 0) return NULL;
+	const char* first = name != NULL ? name->utf8 : "";
+	uint32_t len = 0;
+	if (name != NULL)
+		while (len < name->len && first[len] != ',') len++;
+	const char* alias = "_sans";
+#define DF_IS(lit) (len == sizeof(lit) - 1 && memcmp(first, lit, len) == 0)
+	if (DF_IS("_sans") || DF_IS("_serif") || DF_IS("_typewriter")
+	    || DF_IS("_\xE3\x82\xB4\xE3\x82\xB7\xE3\x83\x83\xE3\x82\xAF")
+	    || DF_IS("_\xE7\xAD\x89\xE5\xB9\x85")
+	    || DF_IS("_\xE6\x98\x8E\xE6\x9C\x9D"))
+		return find_device_font_ladder(first, len, bold, italic);
+	if (DF_IS("Times New Roman"))
+		alias = "_serif";
+	else if (DF_IS("Consolas") || DF_IS("Courier") || DF_IS("Courier New")
+	         || DF_IS("NSimSun"))
+		alias = "_typewriter";
+	else
+	{
+		for (uint32_t i = 0; i < len; i++)
+		{
+			if ((i + 4 <= len && memcmp(first + i, "Ming", 4) == 0)
+			    || (i + 3 <= len && memcmp(first + i, "\xE6\x98\x8E", 3) == 0))
+			{
+				alias = "_\xE6\x98\x8E\xE6\x9C\x9D";
+				break;
+			}
+		}
+	}
+#undef DF_IS
+	return find_device_font_ladder(alias, (uint32_t) strlen(alias), bold, italic);
+}
+
 // Ruffle resolve_font: embedded lookup by name+bold+italic (only when the
 // field embeds fonts), else the device fallback.
 //
@@ -2783,6 +2887,24 @@ static LFont resolve_font(const Avm2EditTextExt* et, const Avm2TextFormatFields*
 					                   fmt->italic != 0);
 				if (efd != NULL && efd->glyph_pts != NULL) f.outline = efd;
 			}
+			return f;
+		}
+	}
+	// layout.rs:604-635: a list that resolved nothing falls back to the
+	// DefaultFont its FIRST name maps to. The recompiler emits each
+	// test.toml `[default_fonts]` list as device rows named `_sans`/`_serif`/
+	// ... (abc_devicefont.cpp collectDefaultFontAliases), so this is an
+	// ordinary device probe. Device fields only, as below: an embedFonts field
+	// that matched nothing draws nothing in Flash.
+	if (et->device_font)
+	{
+		const Avm2FontData* fd = find_default_font_row(fmt->font, fmt->bold != 0,
+		                                               fmt->italic != 0);
+		if (fd != NULL)
+		{
+			f.data = fd;
+			f.is_device = 1;
+			f.outline = NULL;
 			return f;
 		}
 	}
